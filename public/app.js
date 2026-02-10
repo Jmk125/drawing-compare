@@ -34,8 +34,18 @@ const state = {
     alignDragging: false,
     alignDragStartX: 0,
     alignDragStartY: 0,
-    selectedDrawings: new Set()
+    selectedDrawings: new Set(),
+    viewedDrawings: new Set()
 };
+
+state.compositeCanvas = document.createElement('canvas');
+state.compositeCtx = state.compositeCanvas.getContext('2d');
+state.tempOriginalCanvas = document.createElement('canvas');
+state.tempOriginalCtx = state.tempOriginalCanvas.getContext('2d');
+state.tempRevisedCanvas = document.createElement('canvas');
+state.tempRevisedCtx = state.tempRevisedCanvas.getContext('2d');
+state.needsOverlayRebuild = true;
+state.overlayRebuildFrame = null;
 
 // DOM Elements
 const folderSelectionView = document.getElementById('folder-selection');
@@ -190,6 +200,10 @@ function populateList(listId, files, withCheckbox) {
     files.forEach(filename => {
         const itemEl = document.createElement('div');
         itemEl.className = 'drawing-item';
+
+        if (state.viewedDrawings.has(filename)) {
+            itemEl.classList.add('viewed');
+        }
         
         if (withCheckbox) {
             itemEl.classList.add('with-checkbox');
@@ -366,8 +380,11 @@ async function openComparison(filename) {
         state.offsetY = 0;
         state.showOriginal = true;
         state.showRevised = true;
+        state.needsOverlayRebuild = true;
         toggleOriginalCheckbox.checked = true;
         toggleRevisedCheckbox.checked = true;
+
+        state.viewedDrawings.add(filename);
         
         currentDrawingName.textContent = filename;
         
@@ -410,6 +427,14 @@ async function preloadNearbyDrawings(currentFilename) {
 }
 
 function renderComparison() {
+    if (!state.originalImage || !state.revisedImage) {
+        return;
+    }
+
+    if (state.needsOverlayRebuild) {
+        rebuildCompositeOverlay();
+    }
+
     const container = canvasContainer;
     const containerWidth = container.clientWidth;
     const containerHeight = container.clientHeight;
@@ -430,25 +455,103 @@ function renderComparison() {
     canvas.style.top = `${(containerHeight - canvas.height) / 2 + state.offsetY}px`;
     
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-    
-    ctx.save();
-    ctx.scale(displayScale, displayScale);
-    
-    renderOverlay(
-        ctx,
-        state.originalImage,
-        state.revisedImage,
-        state.showOriginal,
-        state.showRevised,
-        state.originalAlignOffsetX,
-        state.originalAlignOffsetY,
-        state.revisedAlignOffsetX,
-        state.revisedAlignOffsetY
-    );
-    
-    ctx.restore();
+    ctx.drawImage(state.compositeCanvas, 0, 0, canvas.width, canvas.height);
     
     updateZoomDisplay();
+}
+
+function queueOverlayRebuildAndRender() {
+    state.needsOverlayRebuild = true;
+
+    if (state.overlayRebuildFrame !== null) {
+        return;
+    }
+
+    state.overlayRebuildFrame = window.requestAnimationFrame(() => {
+        state.overlayRebuildFrame = null;
+        renderComparison();
+    });
+}
+
+function rebuildCompositeOverlay() {
+    const originalImg = state.originalImage;
+    const revisedImg = state.revisedImage;
+
+    state.needsOverlayRebuild = false;
+
+    state.tempOriginalCanvas.width = originalImg.width;
+    state.tempOriginalCanvas.height = originalImg.height;
+    state.tempRevisedCanvas.width = revisedImg.width;
+    state.tempRevisedCanvas.height = revisedImg.height;
+    state.compositeCanvas.width = originalImg.width;
+    state.compositeCanvas.height = originalImg.height;
+
+    const ctxOriginal = state.tempOriginalCtx;
+    const ctxRevised = state.tempRevisedCtx;
+
+    ctxOriginal.clearRect(0, 0, originalImg.width, originalImg.height);
+    ctxRevised.clearRect(0, 0, revisedImg.width, revisedImg.height);
+
+    ctxOriginal.drawImage(originalImg, state.originalAlignOffsetX, state.originalAlignOffsetY);
+    ctxRevised.drawImage(revisedImg, state.revisedAlignOffsetX, state.revisedAlignOffsetY);
+
+    const originalData = ctxOriginal.getImageData(0, 0, originalImg.width, originalImg.height);
+    const revisedData = ctxRevised.getImageData(0, 0, revisedImg.width, revisedImg.height);
+    const outputData = state.compositeCtx.createImageData(originalImg.width, originalImg.height);
+
+    writeOverlayPixels(
+        originalData.data,
+        revisedData.data,
+        outputData.data,
+        state.showOriginal,
+        state.showRevised
+    );
+
+    state.compositeCtx.putImageData(outputData, 0, 0);
+}
+
+function writeOverlayPixels(originalPixels, revisedPixels, outputPixels, showOriginal, showRevised) {
+    for (let i = 0; i < originalPixels.length; i += 4) {
+        const origR = originalPixels[i];
+        const origG = originalPixels[i + 1];
+        const origB = originalPixels[i + 2];
+        const origA = originalPixels[i + 3];
+
+        const revR = revisedPixels[i];
+        const revG = revisedPixels[i + 1];
+        const revB = revisedPixels[i + 2];
+        const revA = revisedPixels[i + 3];
+
+        const origMarked = origA > 10 && (origR < 250 || origG < 250 || origB < 250);
+        const revMarked = revA > 10 && (revR < 250 || revG < 250 || revB < 250);
+
+        if (origMarked && revMarked) {
+            outputPixels[i] = 0;
+            outputPixels[i + 1] = 0;
+            outputPixels[i + 2] = 0;
+            outputPixels[i + 3] = 255;
+        } else if (origMarked && !revMarked) {
+            if (showOriginal) {
+                outputPixels[i] = 0;
+                outputPixels[i + 1] = 0;
+                outputPixels[i + 2] = 255;
+                outputPixels[i + 3] = 255;
+            } else {
+                outputPixels[i + 3] = 0;
+            }
+        } else if (!origMarked && revMarked) {
+            if (showRevised) {
+                outputPixels[i] = 255;
+                outputPixels[i + 1] = 0;
+                outputPixels[i + 2] = 0;
+                outputPixels[i + 3] = 255;
+            } else {
+                outputPixels[i + 3] = 0;
+            }
+        } else {
+            outputPixels[i + 3] = 0;
+        }
+    }
 }
 
 function updateCanvasPosition() {
@@ -489,59 +592,25 @@ function renderOverlay(
     const revisedData = ctxRevised.getImageData(0, 0, revisedImg.width, revisedImg.height);
     const outputData = context.createImageData(originalImg.width, originalImg.height);
     
-    for (let i = 0; i < originalData.data.length; i += 4) {
-        const origR = originalData.data[i];
-        const origG = originalData.data[i + 1];
-        const origB = originalData.data[i + 2];
-        const origA = originalData.data[i + 3];
-        
-        const revR = revisedData.data[i];
-        const revG = revisedData.data[i + 1];
-        const revB = revisedData.data[i + 2];
-        const revA = revisedData.data[i + 3];
-        
-        const origMarked = origA > 10 && (origR < 250 || origG < 250 || origB < 250);
-        const revMarked = revA > 10 && (revR < 250 || revG < 250 || revB < 250);
-        
-        if (origMarked && revMarked) {
-            outputData.data[i] = 0;
-            outputData.data[i + 1] = 0;
-            outputData.data[i + 2] = 0;
-            outputData.data[i + 3] = 255;
-        } else if (origMarked && !revMarked) {
-            if (showOriginal) {
-                outputData.data[i] = 0;
-                outputData.data[i + 1] = 0;
-                outputData.data[i + 2] = 255;
-                outputData.data[i + 3] = 255;
-            } else {
-                outputData.data[i + 3] = 0;
-            }
-        } else if (!origMarked && revMarked) {
-            if (showRevised) {
-                outputData.data[i] = 255;
-                outputData.data[i + 1] = 0;
-                outputData.data[i + 2] = 0;
-                outputData.data[i + 3] = 255;
-            } else {
-                outputData.data[i + 3] = 0;
-            }
-        } else {
-            outputData.data[i + 3] = 0;
-        }
-    }
+    writeOverlayPixels(
+        originalData.data,
+        revisedData.data,
+        outputData.data,
+        showOriginal,
+        showRevised
+    );
     
     context.putImageData(outputData, 0, 0);
 }
 
 toggleOriginalCheckbox.addEventListener('change', () => {
     state.showOriginal = toggleOriginalCheckbox.checked;
-    renderComparison();
+    queueOverlayRebuildAndRender();
 });
 
 toggleRevisedCheckbox.addEventListener('change', () => {
     state.showRevised = toggleRevisedCheckbox.checked;
-    renderComparison();
+    queueOverlayRebuildAndRender();
 });
 
 resetViewBtn.addEventListener('click', () => {
@@ -614,7 +683,7 @@ canvasContainer.addEventListener('mousemove', (e) => {
         state.alignDragStartX = currentX;
         state.alignDragStartY = currentY;
         
-        renderComparison();
+        queueOverlayRebuildAndRender();
     }
 });
 
@@ -673,6 +742,7 @@ backToFoldersBtn.addEventListener('click', () => {
 backToListBtn.addEventListener('click', () => {
     comparisonView.style.display = 'none';
     drawingListView.style.display = 'flex';
+    populateList('both-list', state.bothFiles, true);
 });
 
 window.addEventListener('resize', () => {

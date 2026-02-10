@@ -195,6 +195,15 @@ body {
     border-left-color: #3498db;
 }
 
+.drawing-item.viewed {
+    background: #e8f4ff;
+    border-left-color: #74b9ff;
+}
+
+.drawing-item.viewed:hover {
+    background: #dbeeff;
+}
+
 .drawing-item.with-checkbox {
     display: flex;
     align-items: center;
