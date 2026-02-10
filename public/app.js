@@ -37,7 +37,9 @@ const state = {
     selectedDrawings: new Set(),
     viewedDrawings: new Set(),
     flaggedDrawings: new Set(),
-    lastAlignRenderTime: 0
+    lastAlignRenderTime: 0,
+    currentLetterFilter: 'ALL',
+    isAlignmentPreview: false
 };
 
 state.compositeCanvas = document.createElement('canvas');
@@ -61,6 +63,7 @@ const loadFoldersBtn = document.getElementById('load-folders');
 const loadingMessage = document.getElementById('loading-message');
 const errorMessage = document.getElementById('error-message');
 const backToFoldersBtn = document.getElementById('back-to-folders');
+const letterFilterSelect = document.getElementById('letter-filter');
 const backToListBtn = document.getElementById('back-to-list');
 const canvas = document.getElementById('comparison-canvas');
 const ctx = canvas.getContext('2d');
@@ -212,6 +215,8 @@ function showDrawingList() {
     document.getElementById('original-only-count').textContent = state.originalOnlyFiles.length;
     document.getElementById('revised-only-count').textContent = state.revisedOnlyFiles.length;
     document.getElementById('both-count').textContent = state.bothFiles.length;
+
+    buildLetterFilterOptions();
     
     refreshDrawingLists();
     
@@ -290,10 +295,43 @@ function populateList(listId, files, withCheckbox) {
     });
 }
 
+function getFilteredFiles(files) {
+    if (state.currentLetterFilter === 'ALL') {
+        return files;
+    }
+
+    return files.filter(name => name.toUpperCase().startsWith(state.currentLetterFilter));
+}
+
+function buildLetterFilterOptions() {
+    const letters = new Set();
+
+    [...state.originalOnlyFiles, ...state.revisedOnlyFiles, ...state.bothFiles].forEach((name) => {
+        if (!name) return;
+        letters.add(name[0].toUpperCase());
+    });
+
+    const sorted = Array.from(letters).sort((a, b) => a.localeCompare(b));
+    letterFilterSelect.innerHTML = '<option value="ALL">All</option>';
+
+    sorted.forEach((letter) => {
+        const opt = document.createElement('option');
+        opt.value = letter;
+        opt.textContent = letter;
+        letterFilterSelect.appendChild(opt);
+    });
+
+    if (!sorted.includes(state.currentLetterFilter)) {
+        state.currentLetterFilter = 'ALL';
+    }
+
+    letterFilterSelect.value = state.currentLetterFilter;
+}
+
 function refreshDrawingLists() {
-    populateList('original-only-list', state.originalOnlyFiles, false);
-    populateList('revised-only-list', state.revisedOnlyFiles, false);
-    populateList('both-list', state.bothFiles, true);
+    populateList('original-only-list', getFilteredFiles(state.originalOnlyFiles), false);
+    populateList('revised-only-list', getFilteredFiles(state.revisedOnlyFiles), false);
+    populateList('both-list', getFilteredFiles(state.bothFiles), true);
 }
 
 function toggleDrawingFlag(filename) {
@@ -315,6 +353,11 @@ selectAllBtn.addEventListener('click', () => {
 
 deselectAllBtn.addEventListener('click', () => {
     state.selectedDrawings.clear();
+    refreshDrawingLists();
+});
+
+letterFilterSelect.addEventListener('change', () => {
+    state.currentLetterFilter = letterFilterSelect.value;
     refreshDrawingLists();
 });
 
@@ -540,6 +583,7 @@ function renderComparison() {
 
 function queueOverlayRebuildAndRender(isAlignmentDrag = false) {
     state.needsOverlayRebuild = true;
+    state.isAlignmentPreview = isAlignmentDrag;
 
     if (state.overlayRebuildFrame !== null) {
         return;
@@ -548,7 +592,7 @@ function queueOverlayRebuildAndRender(isAlignmentDrag = false) {
     if (isAlignmentDrag) {
         const now = performance.now();
         const elapsed = now - state.lastAlignRenderTime;
-        const waitMs = Math.max(0, 50 - elapsed);
+        const waitMs = Math.max(0, 90 - elapsed);
 
         state.overlayRebuildFrame = window.setTimeout(() => {
             state.overlayRebuildFrame = null;
@@ -570,25 +614,34 @@ function rebuildCompositeOverlay() {
 
     state.needsOverlayRebuild = false;
 
-    state.tempOriginalCanvas.width = originalImg.width;
-    state.tempOriginalCanvas.height = originalImg.height;
-    state.tempRevisedCanvas.width = revisedImg.width;
-    state.tempRevisedCanvas.height = revisedImg.height;
-    state.compositeCanvas.width = originalImg.width;
-    state.compositeCanvas.height = originalImg.height;
+    const scaleFactor = state.isAlignmentPreview ? 0.5 : 1;
+    const targetWidth = Math.max(1, Math.floor(originalImg.width * scaleFactor));
+    const targetHeight = Math.max(1, Math.floor(originalImg.height * scaleFactor));
+
+    state.tempOriginalCanvas.width = targetWidth;
+    state.tempOriginalCanvas.height = targetHeight;
+    state.tempRevisedCanvas.width = targetWidth;
+    state.tempRevisedCanvas.height = targetHeight;
+    state.compositeCanvas.width = targetWidth;
+    state.compositeCanvas.height = targetHeight;
 
     const ctxOriginal = state.tempOriginalCtx;
     const ctxRevised = state.tempRevisedCtx;
 
-    ctxOriginal.clearRect(0, 0, originalImg.width, originalImg.height);
-    ctxRevised.clearRect(0, 0, revisedImg.width, revisedImg.height);
+    ctxOriginal.clearRect(0, 0, targetWidth, targetHeight);
+    ctxRevised.clearRect(0, 0, targetWidth, targetHeight);
 
-    ctxOriginal.drawImage(originalImg, state.originalAlignOffsetX, state.originalAlignOffsetY);
-    ctxRevised.drawImage(revisedImg, state.revisedAlignOffsetX, state.revisedAlignOffsetY);
+    const origOffsetX = state.originalAlignOffsetX * scaleFactor;
+    const origOffsetY = state.originalAlignOffsetY * scaleFactor;
+    const revOffsetX = state.revisedAlignOffsetX * scaleFactor;
+    const revOffsetY = state.revisedAlignOffsetY * scaleFactor;
 
-    const originalData = ctxOriginal.getImageData(0, 0, originalImg.width, originalImg.height);
-    const revisedData = ctxRevised.getImageData(0, 0, revisedImg.width, revisedImg.height);
-    const outputData = state.compositeCtx.createImageData(originalImg.width, originalImg.height);
+    ctxOriginal.drawImage(originalImg, 0, 0, originalImg.width, originalImg.height, origOffsetX, origOffsetY, targetWidth, targetHeight);
+    ctxRevised.drawImage(revisedImg, 0, 0, revisedImg.width, revisedImg.height, revOffsetX, revOffsetY, targetWidth, targetHeight);
+
+    const originalData = ctxOriginal.getImageData(0, 0, targetWidth, targetHeight);
+    const revisedData = ctxRevised.getImageData(0, 0, targetWidth, targetHeight);
+    const outputData = state.compositeCtx.createImageData(targetWidth, targetHeight);
 
     writeOverlayPixels(
         originalData.data,
@@ -708,7 +761,18 @@ resetViewBtn.addEventListener('click', () => {
     state.scale = 1;
     state.offsetX = 0;
     state.offsetY = 0;
-    renderComparison();
+
+    state.originalAlignOffsetX = 0;
+    state.originalAlignOffsetY = 0;
+    state.revisedAlignOffsetX = 0;
+    state.revisedAlignOffsetY = 0;
+
+    if (state.currentDrawing) {
+        delete state.alignmentData[state.currentDrawing];
+        saveAlignmentData();
+    }
+
+    queueOverlayRebuildAndRender();
 });
 
 function zoomAtCursor(clientX, clientY, factor) {
@@ -779,6 +843,8 @@ canvasContainer.addEventListener('mousedown', (e) => {
                 revisedOffsetY: state.revisedAlignOffsetY
             };
             saveAlignmentData();
+            state.isAlignmentPreview = false;
+            queueOverlayRebuildAndRender();
             exitAlignMode();
         }
     }
@@ -816,6 +882,11 @@ canvasContainer.addEventListener('mouseup', (e) => {
     if (e.button === 2) {
         state.isPanning = false;
         canvasContainer.classList.remove('panning');
+    }
+
+    if (e.button === 0 && state.isAligning && !state.alignDragging) {
+        state.isAlignmentPreview = false;
+        queueOverlayRebuildAndRender();
     }
 });
 

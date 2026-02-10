@@ -146,6 +146,20 @@ body {
     border-bottom: 2px solid #ddd;
 }
 
+
+.list-header-controls {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.list-header-controls select {
+    padding: 8px 10px;
+    border: 1px solid #cfd8dc;
+    border-radius: 4px;
+    background: #fff;
+}
+
 .list-container {
     display: grid;
     grid-template-columns: 1fr 2fr 1fr;

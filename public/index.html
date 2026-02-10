@@ -35,7 +35,13 @@
         <div id="drawing-list" class="view" style="display: none;">
             <div class="header">
                 <h1>Drawing Comparison</h1>
-                <button id="back-to-folders" class="btn-secondary">Change Folders</button>
+                <div class="list-header-controls">
+                    <label for="letter-filter">Starts with:</label>
+                    <select id="letter-filter">
+                        <option value="ALL">All</option>
+                    </select>
+                    <button id="back-to-folders" class="btn-secondary">Change Folders</button>
+                </div>
             </div>
             
             <div class="list-container">
