@@ -40,6 +40,8 @@ const state = {
     drawingNotes: {},
     currentLetterFilter: 'ALL',
     isAlignmentPreview: false,
+    alignOriginalTinted: null,
+    alignRevisedTinted: null,
     pendingSessionData: null,
     originalFolderName: '',
     revisedFolderName: '',
@@ -1024,12 +1026,16 @@ function renderComparison() {
     
     const displayScale = fitScale * state.scale;
     
-    canvas.width = imgWidth * displayScale;
-    canvas.height = imgHeight * displayScale;
-    
+    const newWidth = Math.round(imgWidth * displayScale);
+    const newHeight = Math.round(imgHeight * displayScale);
+    if (canvas.width !== newWidth || canvas.height !== newHeight) {
+        canvas.width = newWidth;
+        canvas.height = newHeight;
+    }
+
     canvas.style.left = `${(containerWidth - canvas.width) / 2 + state.offsetX}px`;
     canvas.style.top = `${(containerHeight - canvas.height) / 2 + state.offsetY}px`;
-    
+
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.imageSmoothingEnabled = true;
     ctx.imageSmoothingQuality = 'high';
@@ -1052,6 +1058,30 @@ function queueOverlayRebuildAndRender(isAlignmentDrag = false) {
     });
 }
 
+function createTintedCanvas(image, r, g, b) {
+    const c = document.createElement('canvas');
+    c.width = image.width;
+    c.height = image.height;
+    const tintCtx = c.getContext('2d');
+    tintCtx.drawImage(image, 0, 0);
+    const imageData = tintCtx.getImageData(0, 0, c.width, c.height);
+    const d = imageData.data;
+    for (let i = 0; i < d.length; i += 4) {
+        const luma = (0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2]) / 255;
+        const strength = (1 - luma) * (d[i + 3] / 255);
+        if (strength > MARK_THRESHOLD) {
+            d[i] = r;
+            d[i + 1] = g;
+            d[i + 2] = b;
+            d[i + 3] = Math.max(90, Math.round(strength * 255));
+        } else {
+            d[i + 3] = 0;
+        }
+    }
+    tintCtx.putImageData(imageData, 0, 0);
+    return c;
+}
+
 function rebuildCompositeOverlay() {
     const originalImg = state.originalImage;
     const revisedImg = state.revisedImage;
@@ -1061,31 +1091,22 @@ function rebuildCompositeOverlay() {
     const targetWidth = originalImg.width;
     const targetHeight = originalImg.height;
 
-    // During alignment drag, use fast GPU-accelerated canvas compositing
-    // instead of expensive pixel-by-pixel processing. This gives full
-    // resolution preview at 60fps. The multiply blend mode makes lines from
-    // both drawings visible: white areas pass through, dark lines darken.
-    if (state.isAlignmentPreview) {
-        state.compositeCanvas.width = targetWidth;
-        state.compositeCanvas.height = targetHeight;
+    // During alignment drag, composite pre-tinted blue/red canvases.
+    // These were rendered once in enterAlignMode(), so each frame is
+    // just two GPU-accelerated drawImage calls at full resolution.
+    if (state.isAlignmentPreview && state.alignOriginalTinted && state.alignRevisedTinted) {
+        if (state.compositeCanvas.width !== targetWidth || state.compositeCanvas.height !== targetHeight) {
+            state.compositeCanvas.width = targetWidth;
+            state.compositeCanvas.height = targetHeight;
+        }
 
         const compCtx = state.compositeCtx;
-
-        // White background (needed for multiply blend to work correctly)
+        compCtx.clearRect(0, 0, targetWidth, targetHeight);
         compCtx.fillStyle = '#ffffff';
         compCtx.fillRect(0, 0, targetWidth, targetHeight);
 
-        // Draw original image at its alignment offset
-        compCtx.globalCompositeOperation = 'source-over';
-        compCtx.drawImage(originalImg, 0, 0, originalImg.width, originalImg.height,
-            state.originalAlignOffsetX, state.originalAlignOffsetY, targetWidth, targetHeight);
-
-        // Multiply-blend the revised image on top so both sets of lines show
-        compCtx.globalCompositeOperation = 'multiply';
-        compCtx.drawImage(revisedImg, 0, 0, revisedImg.width, revisedImg.height,
-            state.revisedAlignOffsetX, state.revisedAlignOffsetY, targetWidth, targetHeight);
-
-        compCtx.globalCompositeOperation = 'source-over';
+        compCtx.drawImage(state.alignOriginalTinted, state.originalAlignOffsetX, state.originalAlignOffsetY);
+        compCtx.drawImage(state.alignRevisedTinted, state.revisedAlignOffsetX, state.revisedAlignOffsetY);
         return;
     }
 
@@ -1554,12 +1575,22 @@ function enterAlignMode(version) {
     alignInstructions.style.display = 'none';
     alignActiveMessage.style.display = 'flex';
     canvasContainer.classList.add('aligning');
+
+    // Pre-render tinted canvases once so alignment drag is just two drawImage calls
+    if (state.originalImage) {
+        state.alignOriginalTinted = createTintedCanvas(state.originalImage, 94, 140, 255);
+    }
+    if (state.revisedImage) {
+        state.alignRevisedTinted = createTintedCanvas(state.revisedImage, 255, 110, 110);
+    }
 }
 
 function exitAlignMode() {
     state.isAligning = false;
     state.aligningVersion = null;
     state.alignDragging = false;
+    state.alignOriginalTinted = null;
+    state.alignRevisedTinted = null;
     alignActiveMessage.style.display = 'none';
     canvasContainer.classList.remove('aligning');
 }
