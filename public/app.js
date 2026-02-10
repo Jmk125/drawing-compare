@@ -41,7 +41,9 @@ const state = {
     lastAlignRenderTime: 0,
     currentLetterFilter: 'ALL',
     isAlignmentPreview: false,
-    pendingSessionData: null
+    pendingSessionData: null,
+    originalFolderName: '',
+    revisedFolderName: ''
 };
 
 state.compositeCanvas = document.createElement('canvas');
@@ -97,29 +99,154 @@ const seeAllNotesBtn = document.getElementById('see-all-notes');
 const notesModal = document.getElementById('notes-modal');
 const closeNotesModalBtn = document.getElementById('close-notes-modal');
 const notesModalBody = document.getElementById('notes-modal-body');
+const notesModalTitle = document.getElementById('notes-modal-title');
 const exportNotesBtn = document.getElementById('export-notes');
 
 state.canvas = canvas;
 state.ctx = ctx;
 
-originalFolderInput.addEventListener('change', (e) => {
-    const files = Array.from(e.target.files).filter(f => f.name.toLowerCase().endsWith('.pdf'));
+
+const HANDLE_DB_NAME = 'drawing-compare-handles';
+const HANDLE_STORE_NAME = 'folderHandles';
+const ORIGINAL_HANDLE_KEY = 'original-folder-handle';
+const REVISED_HANDLE_KEY = 'revised-folder-handle';
+
+function getFolderNameFromFiles(files) {
+    const first = files[0];
+    if (!first || !first.webkitRelativePath) return '';
+    return first.webkitRelativePath.split('/')[0] || '';
+}
+
+function setOriginalFiles(files, folderName = '') {
     state.originalFiles = files;
     state.originalFileMap = {};
-    files.forEach(file => {
+    files.forEach((file) => {
         state.originalFileMap[file.name] = file;
     });
-    originalCountEl.textContent = `${files.length} PDF files selected`;
+    state.originalFolderName = folderName || getFolderNameFromFiles(files);
+    const label = state.originalFolderName ? ` (${state.originalFolderName})` : '';
+    originalCountEl.textContent = `${files.length} PDF files selected${label}`;
+}
+
+function setRevisedFiles(files, folderName = '') {
+    state.revisedFiles = files;
+    state.revisedFileMap = {};
+    files.forEach((file) => {
+        state.revisedFileMap[file.name] = file;
+    });
+    state.revisedFolderName = folderName || getFolderNameFromFiles(files);
+    const label = state.revisedFolderName ? ` (${state.revisedFolderName})` : '';
+    revisedCountEl.textContent = `${files.length} PDF files selected${label}`;
+}
+
+function openHandleDb() {
+    return new Promise((resolve, reject) => {
+        const request = indexedDB.open(HANDLE_DB_NAME, 1);
+        request.onupgradeneeded = () => {
+            const db = request.result;
+            if (!db.objectStoreNames.contains(HANDLE_STORE_NAME)) {
+                db.createObjectStore(HANDLE_STORE_NAME);
+            }
+        };
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+    });
+}
+
+async function putStoredFolderHandle(key, handle) {
+    if (!window.showDirectoryPicker || !handle) return;
+    const db = await openHandleDb();
+    await new Promise((resolve, reject) => {
+        const tx = db.transaction(HANDLE_STORE_NAME, 'readwrite');
+        tx.objectStore(HANDLE_STORE_NAME).put(handle, key);
+        tx.oncomplete = resolve;
+        tx.onerror = () => reject(tx.error);
+    });
+    db.close();
+}
+
+async function getStoredFolderHandle(key) {
+    if (!window.showDirectoryPicker) return null;
+    const db = await openHandleDb();
+    const result = await new Promise((resolve, reject) => {
+        const tx = db.transaction(HANDLE_STORE_NAME, 'readonly');
+        const req = tx.objectStore(HANDLE_STORE_NAME).get(key);
+        req.onsuccess = () => resolve(req.result || null);
+        req.onerror = () => reject(req.error);
+    });
+    db.close();
+    return result;
+}
+
+async function collectPdfFilesFromDirectoryHandle(directoryHandle, files = []) {
+    for await (const entry of directoryHandle.values()) {
+        if (entry.kind === 'file' && entry.name.toLowerCase().endsWith('.pdf')) {
+            const file = await entry.getFile();
+            files.push(file);
+        } else if (entry.kind === 'directory') {
+            await collectPdfFilesFromDirectoryHandle(entry, files);
+        }
+    }
+    return files;
+}
+
+async function loadFilesFromStoredFolderHandle(handle) {
+    if (!handle) return [];
+
+    const permission = await handle.queryPermission({ mode: 'read' });
+    if (permission !== 'granted') {
+        const requested = await handle.requestPermission({ mode: 'read' });
+        if (requested !== 'granted') {
+            throw new Error(`Permission denied for folder ${handle.name}`);
+        }
+    }
+
+    return collectPdfFilesFromDirectoryHandle(handle, []);
+}
+
+async function tryRestoreFoldersFromSession(sessionData) {
+    const info = sessionData.folderHandles;
+    if (!info || typeof info !== 'object') return false;
+
+    try {
+        const originalKey = info.originalStorageKey || ORIGINAL_HANDLE_KEY;
+        const revisedKey = info.revisedStorageKey || REVISED_HANDLE_KEY;
+
+        const [originalHandle, revisedHandle] = await Promise.all([
+            getStoredFolderHandle(originalKey),
+            getStoredFolderHandle(revisedKey)
+        ]);
+
+        if (!originalHandle || !revisedHandle) {
+            return false;
+        }
+
+        const [originalFiles, revisedFiles] = await Promise.all([
+            loadFilesFromStoredFolderHandle(originalHandle),
+            loadFilesFromStoredFolderHandle(revisedHandle)
+        ]);
+
+        if (originalFiles.length === 0 || revisedFiles.length === 0) {
+            return false;
+        }
+
+        setOriginalFiles(originalFiles, info.originalName || originalHandle.name || '');
+        setRevisedFiles(revisedFiles, info.revisedName || revisedHandle.name || '');
+        return true;
+    } catch (error) {
+        console.warn('Unable to restore folders from session handles:', error);
+        return false;
+    }
+}
+
+originalFolderInput.addEventListener('change', (e) => {
+    const files = Array.from(e.target.files).filter(f => f.name.toLowerCase().endsWith('.pdf'));
+    setOriginalFiles(files);
 });
 
 revisedFolderInput.addEventListener('change', (e) => {
     const files = Array.from(e.target.files).filter(f => f.name.toLowerCase().endsWith('.pdf'));
-    state.revisedFiles = files;
-    state.revisedFileMap = {};
-    files.forEach(file => {
-        state.revisedFileMap[file.name] = file;
-    });
-    revisedCountEl.textContent = `${files.length} PDF files selected`;
+    setRevisedFiles(files);
 });
 
 
@@ -136,13 +263,17 @@ loadSessionFileInput.addEventListener('change', async (e) => {
         const sessionData = JSON.parse(text);
         state.pendingSessionData = sessionData;
 
-        if (state.originalFiles.length > 0 && state.revisedFiles.length > 0) {
-            applySessionData(sessionData);
-            state.pendingSessionData = null;
-            showDrawingList();
-        } else {
-            alert('Session file loaded. Now select both folders and click Load Drawings to apply it.');
+        if (state.originalFiles.length === 0 || state.revisedFiles.length === 0) {
+            const restored = await tryRestoreFoldersFromSession(sessionData);
+            if (!restored) {
+                alert('Could not auto-locate one or both saved folders. Please reselect the missing folder(s), then click Load Drawings.');
+                return;
+            }
         }
+
+        applySessionData(sessionData);
+        state.pendingSessionData = null;
+        showDrawingList();
     } catch (error) {
         alert('Failed to load session file: ' + error.message);
     } finally {
@@ -150,8 +281,8 @@ loadSessionFileInput.addEventListener('change', async (e) => {
     }
 });
 
-saveSessionBtn.addEventListener('click', () => {
-    downloadSessionFile();
+saveSessionBtn.addEventListener('click', async () => {
+    await downloadSessionFile();
 });
 
 function loadAlignmentData() {
@@ -232,12 +363,49 @@ function buildSessionData() {
         viewedDrawings: Array.from(state.viewedDrawings),
         flaggedDrawings: Array.from(state.flaggedDrawings),
         drawingNotes: state.drawingNotes,
+        folderHandles: {
+            originalStorageKey: ORIGINAL_HANDLE_KEY,
+            revisedStorageKey: REVISED_HANDLE_KEY,
+            originalName: state.originalFolderName,
+            revisedName: state.revisedFolderName
+        },
         alignmentData: state.alignmentData,
         letterFilter: state.currentLetterFilter
     };
 }
 
-function downloadSessionFile() {
+async function ensureStoredFolderHandlesForSession() {
+    if (!window.showDirectoryPicker) return;
+
+    try {
+        const hasOriginal = await getStoredFolderHandle(ORIGINAL_HANDLE_KEY);
+        if (!hasOriginal && state.originalFiles.length > 0) {
+            const originalHandle = await window.showDirectoryPicker({ id: 'original-folder-handle' });
+            if (originalHandle) {
+                await putStoredFolderHandle(ORIGINAL_HANDLE_KEY, originalHandle);
+                state.originalFolderName = state.originalFolderName || originalHandle.name || '';
+            }
+        }
+    } catch (error) {
+        console.warn('Original folder-handle capture skipped:', error);
+    }
+
+    try {
+        const hasRevised = await getStoredFolderHandle(REVISED_HANDLE_KEY);
+        if (!hasRevised && state.revisedFiles.length > 0) {
+            const revisedHandle = await window.showDirectoryPicker({ id: 'revised-folder-handle' });
+            if (revisedHandle) {
+                await putStoredFolderHandle(REVISED_HANDLE_KEY, revisedHandle);
+                state.revisedFolderName = state.revisedFolderName || revisedHandle.name || '';
+            }
+        }
+    } catch (error) {
+        console.warn('Revised folder-handle capture skipped:', error);
+    }
+}
+
+async function downloadSessionFile() {
+    await ensureStoredFolderHandlesForSession();
     const sessionData = buildSessionData();
     const blob = new Blob([JSON.stringify(sessionData, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
@@ -315,6 +483,12 @@ loadFoldersBtn.addEventListener('click', async () => {
     
     try {
         categorizeFiles();
+        if (!state.originalFolderName) {
+            state.originalFolderName = getFolderNameFromFiles(state.originalFiles);
+        }
+        if (!state.revisedFolderName) {
+            state.revisedFolderName = getFolderNameFromFiles(state.revisedFiles);
+        }
         loadAlignmentData();
         loadFlaggedData();
         loadNotesData();
@@ -432,7 +606,7 @@ function populateList(listId, files, withCheckbox) {
         noteBtn.classList.toggle('active', Boolean(getNote(filename)));
         noteBtn.addEventListener('click', (e) => {
             e.stopPropagation();
-            openComparison(filename).then(() => openNotePanel());
+            openSingleNoteModal(filename);
         });
 
         const flagBtn = document.createElement('button');
@@ -942,7 +1116,21 @@ function escapeHtml(value) {
         .replaceAll("'", '&#39;');
 }
 
+function openSingleNoteModal(filename) {
+    notesModalTitle.textContent = `Note: ${filename}`;
+    const note = getNote(filename);
+
+    if (!note) {
+        notesModalBody.innerHTML = '<p>No note saved for this drawing.</p>';
+    } else {
+        notesModalBody.innerHTML = `<div class="note-row"><div class="note-row-title">${escapeHtml(filename)}</div><div class="note-row-body">${escapeHtml(note).replaceAll('\n', '<br>')}</div></div>`;
+    }
+
+    notesModal.style.display = 'flex';
+}
+
 function openNotesModal() {
+    notesModalTitle.textContent = 'All Drawing Notes';
     const entries = Object.entries(state.drawingNotes)
         .filter(([, note]) => typeof note === 'string' && note.trim())
         .sort(([a], [b]) => a.localeCompare(b));
@@ -960,6 +1148,7 @@ function openNotesModal() {
 
 function closeNotesModal() {
     notesModal.style.display = 'none';
+    notesModalTitle.textContent = 'All Drawing Notes';
 }
 
 function exportNotesToExcelCsv() {
