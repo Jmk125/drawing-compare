@@ -12,7 +12,7 @@ const crypto = require('crypto');
 
 const app = express();
 const PORT = 3500;
-const PDF_CONVERSION_DPI = Number(process.env.PDF_CONVERSION_DPI || 144);
+const PDF_CONVERSION_DPI = Number(process.env.PDF_CONVERSION_DPI || 200);
 const MAX_CONVERSION_CACHE_ITEMS = Number(process.env.MAX_CONVERSION_CACHE_ITEMS || 120);
 const conversionCache = new Map();
 

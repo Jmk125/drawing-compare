@@ -38,7 +38,6 @@ const state = {
     viewedDrawings: new Set(),
     flaggedDrawings: new Set(),
     drawingNotes: {},
-    lastAlignRenderTime: 0,
     currentLetterFilter: 'ALL',
     isAlignmentPreview: false,
     pendingSessionData: null,
@@ -62,8 +61,6 @@ state.tempRevisedCtx = state.tempRevisedCanvas.getContext('2d', { willReadFreque
 state.needsOverlayRebuild = true;
 state.overlayRebuildFrame = null;
 
-const ALIGN_PREVIEW_SCALE = 0.22;
-const ALIGN_PREVIEW_MAX_FPS = 20;
 const MARK_THRESHOLD = 0.02;
 
 // DOM Elements
@@ -1049,19 +1046,6 @@ function queueOverlayRebuildAndRender(isAlignmentDrag = false) {
         return;
     }
 
-    if (isAlignmentDrag) {
-        const now = performance.now();
-        const elapsed = now - state.lastAlignRenderTime;
-        const waitMs = Math.max(0, Math.round(1000 / ALIGN_PREVIEW_MAX_FPS) - elapsed);
-
-        state.overlayRebuildFrame = window.setTimeout(() => {
-            state.overlayRebuildFrame = null;
-            state.lastAlignRenderTime = performance.now();
-            renderComparison();
-        }, waitMs);
-        return;
-    }
-
     state.overlayRebuildFrame = window.requestAnimationFrame(() => {
         state.overlayRebuildFrame = null;
         renderComparison();
@@ -1074,10 +1058,38 @@ function rebuildCompositeOverlay() {
 
     state.needsOverlayRebuild = false;
 
-    const scaleFactor = state.isAlignmentPreview ? ALIGN_PREVIEW_SCALE : 1;
-    const targetWidth = Math.max(1, Math.floor(originalImg.width * scaleFactor));
-    const targetHeight = Math.max(1, Math.floor(originalImg.height * scaleFactor));
+    const targetWidth = originalImg.width;
+    const targetHeight = originalImg.height;
 
+    // During alignment drag, use fast GPU-accelerated canvas compositing
+    // instead of expensive pixel-by-pixel processing. This gives full
+    // resolution preview at 60fps. The multiply blend mode makes lines from
+    // both drawings visible: white areas pass through, dark lines darken.
+    if (state.isAlignmentPreview) {
+        state.compositeCanvas.width = targetWidth;
+        state.compositeCanvas.height = targetHeight;
+
+        const compCtx = state.compositeCtx;
+
+        // White background (needed for multiply blend to work correctly)
+        compCtx.fillStyle = '#ffffff';
+        compCtx.fillRect(0, 0, targetWidth, targetHeight);
+
+        // Draw original image at its alignment offset
+        compCtx.globalCompositeOperation = 'source-over';
+        compCtx.drawImage(originalImg, 0, 0, originalImg.width, originalImg.height,
+            state.originalAlignOffsetX, state.originalAlignOffsetY, targetWidth, targetHeight);
+
+        // Multiply-blend the revised image on top so both sets of lines show
+        compCtx.globalCompositeOperation = 'multiply';
+        compCtx.drawImage(revisedImg, 0, 0, revisedImg.width, revisedImg.height,
+            state.revisedAlignOffsetX, state.revisedAlignOffsetY, targetWidth, targetHeight);
+
+        compCtx.globalCompositeOperation = 'source-over';
+        return;
+    }
+
+    // Full pixel-level color-coded overlay for final rendering
     state.tempOriginalCanvas.width = targetWidth;
     state.tempOriginalCanvas.height = targetHeight;
     state.tempRevisedCanvas.width = targetWidth;
@@ -1091,13 +1103,10 @@ function rebuildCompositeOverlay() {
     ctxOriginal.clearRect(0, 0, targetWidth, targetHeight);
     ctxRevised.clearRect(0, 0, targetWidth, targetHeight);
 
-    const origOffsetX = state.originalAlignOffsetX * scaleFactor;
-    const origOffsetY = state.originalAlignOffsetY * scaleFactor;
-    const revOffsetX = state.revisedAlignOffsetX * scaleFactor;
-    const revOffsetY = state.revisedAlignOffsetY * scaleFactor;
-
-    ctxOriginal.drawImage(originalImg, 0, 0, originalImg.width, originalImg.height, origOffsetX, origOffsetY, targetWidth, targetHeight);
-    ctxRevised.drawImage(revisedImg, 0, 0, revisedImg.width, revisedImg.height, revOffsetX, revOffsetY, targetWidth, targetHeight);
+    ctxOriginal.drawImage(originalImg, 0, 0, originalImg.width, originalImg.height,
+        state.originalAlignOffsetX, state.originalAlignOffsetY, targetWidth, targetHeight);
+    ctxRevised.drawImage(revisedImg, 0, 0, revisedImg.width, revisedImg.height,
+        state.revisedAlignOffsetX, state.revisedAlignOffsetY, targetWidth, targetHeight);
 
     const originalData = ctxOriginal.getImageData(0, 0, targetWidth, targetHeight);
     const revisedData = ctxRevised.getImageData(0, 0, targetWidth, targetHeight);
