@@ -37,10 +37,13 @@ const state = {
     selectedDrawings: new Set(),
     viewedDrawings: new Set(),
     flaggedDrawings: new Set(),
+    drawingNotes: {},
     lastAlignRenderTime: 0,
     currentLetterFilter: 'ALL',
     isAlignmentPreview: false,
-    pendingSessionData: null
+    pendingSessionData: null,
+    originalFolderName: '',
+    revisedFolderName: ''
 };
 
 state.compositeCanvas = document.createElement('canvas');
@@ -87,28 +90,163 @@ const alignActiveMessage = document.getElementById('align-active-message');
 const selectAllBtn = document.getElementById('select-all');
 const deselectAllBtn = document.getElementById('deselect-all');
 const exportSelectedBtn = document.getElementById('export-selected');
+const editNoteBtn = document.getElementById('edit-note');
+const notePanel = document.getElementById('note-panel');
+const closeNotePanelBtn = document.getElementById('close-note-panel');
+const noteTextarea = document.getElementById('note-textarea');
+const saveNoteBtn = document.getElementById('save-note');
+const seeAllNotesBtn = document.getElementById('see-all-notes');
+const notesModal = document.getElementById('notes-modal');
+const closeNotesModalBtn = document.getElementById('close-notes-modal');
+const notesModalBody = document.getElementById('notes-modal-body');
+const notesModalTitle = document.getElementById('notes-modal-title');
+const exportNotesBtn = document.getElementById('export-notes');
 
 state.canvas = canvas;
 state.ctx = ctx;
 
-originalFolderInput.addEventListener('change', (e) => {
-    const files = Array.from(e.target.files).filter(f => f.name.toLowerCase().endsWith('.pdf'));
+
+const HANDLE_DB_NAME = 'drawing-compare-handles';
+const HANDLE_STORE_NAME = 'folderHandles';
+const ORIGINAL_HANDLE_KEY = 'original-folder-handle';
+const REVISED_HANDLE_KEY = 'revised-folder-handle';
+
+function getFolderNameFromFiles(files) {
+    const first = files[0];
+    if (!first || !first.webkitRelativePath) return '';
+    return first.webkitRelativePath.split('/')[0] || '';
+}
+
+function setOriginalFiles(files, folderName = '') {
     state.originalFiles = files;
     state.originalFileMap = {};
-    files.forEach(file => {
+    files.forEach((file) => {
         state.originalFileMap[file.name] = file;
     });
-    originalCountEl.textContent = `${files.length} PDF files selected`;
+    state.originalFolderName = folderName || getFolderNameFromFiles(files);
+    const label = state.originalFolderName ? ` (${state.originalFolderName})` : '';
+    originalCountEl.textContent = `${files.length} PDF files selected${label}`;
+}
+
+function setRevisedFiles(files, folderName = '') {
+    state.revisedFiles = files;
+    state.revisedFileMap = {};
+    files.forEach((file) => {
+        state.revisedFileMap[file.name] = file;
+    });
+    state.revisedFolderName = folderName || getFolderNameFromFiles(files);
+    const label = state.revisedFolderName ? ` (${state.revisedFolderName})` : '';
+    revisedCountEl.textContent = `${files.length} PDF files selected${label}`;
+}
+
+function openHandleDb() {
+    return new Promise((resolve, reject) => {
+        const request = indexedDB.open(HANDLE_DB_NAME, 1);
+        request.onupgradeneeded = () => {
+            const db = request.result;
+            if (!db.objectStoreNames.contains(HANDLE_STORE_NAME)) {
+                db.createObjectStore(HANDLE_STORE_NAME);
+            }
+        };
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+    });
+}
+
+async function putStoredFolderHandle(key, handle) {
+    if (!window.showDirectoryPicker || !handle) return;
+    const db = await openHandleDb();
+    await new Promise((resolve, reject) => {
+        const tx = db.transaction(HANDLE_STORE_NAME, 'readwrite');
+        tx.objectStore(HANDLE_STORE_NAME).put(handle, key);
+        tx.oncomplete = resolve;
+        tx.onerror = () => reject(tx.error);
+    });
+    db.close();
+}
+
+async function getStoredFolderHandle(key) {
+    if (!window.showDirectoryPicker) return null;
+    const db = await openHandleDb();
+    const result = await new Promise((resolve, reject) => {
+        const tx = db.transaction(HANDLE_STORE_NAME, 'readonly');
+        const req = tx.objectStore(HANDLE_STORE_NAME).get(key);
+        req.onsuccess = () => resolve(req.result || null);
+        req.onerror = () => reject(req.error);
+    });
+    db.close();
+    return result;
+}
+
+async function collectPdfFilesFromDirectoryHandle(directoryHandle, files = []) {
+    for await (const entry of directoryHandle.values()) {
+        if (entry.kind === 'file' && entry.name.toLowerCase().endsWith('.pdf')) {
+            const file = await entry.getFile();
+            files.push(file);
+        } else if (entry.kind === 'directory') {
+            await collectPdfFilesFromDirectoryHandle(entry, files);
+        }
+    }
+    return files;
+}
+
+async function loadFilesFromStoredFolderHandle(handle) {
+    if (!handle) return [];
+
+    const permission = await handle.queryPermission({ mode: 'read' });
+    if (permission !== 'granted') {
+        const requested = await handle.requestPermission({ mode: 'read' });
+        if (requested !== 'granted') {
+            throw new Error(`Permission denied for folder ${handle.name}`);
+        }
+    }
+
+    return collectPdfFilesFromDirectoryHandle(handle, []);
+}
+
+async function tryRestoreFoldersFromSession(sessionData) {
+    const info = sessionData.folderHandles;
+    if (!info || typeof info !== 'object') return false;
+
+    try {
+        const originalKey = info.originalStorageKey || ORIGINAL_HANDLE_KEY;
+        const revisedKey = info.revisedStorageKey || REVISED_HANDLE_KEY;
+
+        const [originalHandle, revisedHandle] = await Promise.all([
+            getStoredFolderHandle(originalKey),
+            getStoredFolderHandle(revisedKey)
+        ]);
+
+        if (!originalHandle || !revisedHandle) {
+            return false;
+        }
+
+        const [originalFiles, revisedFiles] = await Promise.all([
+            loadFilesFromStoredFolderHandle(originalHandle),
+            loadFilesFromStoredFolderHandle(revisedHandle)
+        ]);
+
+        if (originalFiles.length === 0 || revisedFiles.length === 0) {
+            return false;
+        }
+
+        setOriginalFiles(originalFiles, info.originalName || originalHandle.name || '');
+        setRevisedFiles(revisedFiles, info.revisedName || revisedHandle.name || '');
+        return true;
+    } catch (error) {
+        console.warn('Unable to restore folders from session handles:', error);
+        return false;
+    }
+}
+
+originalFolderInput.addEventListener('change', (e) => {
+    const files = Array.from(e.target.files).filter(f => f.name.toLowerCase().endsWith('.pdf'));
+    setOriginalFiles(files);
 });
 
 revisedFolderInput.addEventListener('change', (e) => {
     const files = Array.from(e.target.files).filter(f => f.name.toLowerCase().endsWith('.pdf'));
-    state.revisedFiles = files;
-    state.revisedFileMap = {};
-    files.forEach(file => {
-        state.revisedFileMap[file.name] = file;
-    });
-    revisedCountEl.textContent = `${files.length} PDF files selected`;
+    setRevisedFiles(files);
 });
 
 
@@ -125,13 +263,17 @@ loadSessionFileInput.addEventListener('change', async (e) => {
         const sessionData = JSON.parse(text);
         state.pendingSessionData = sessionData;
 
-        if (state.originalFiles.length > 0 && state.revisedFiles.length > 0) {
-            applySessionData(sessionData);
-            state.pendingSessionData = null;
-            showDrawingList();
-        } else {
-            alert('Session file loaded. Now select both folders and click Load Drawings to apply it.');
+        if (state.originalFiles.length === 0 || state.revisedFiles.length === 0) {
+            const restored = await tryRestoreFoldersFromSession(sessionData);
+            if (!restored) {
+                alert('Could not auto-locate one or both saved folders. Please reselect the missing folder(s), then click Load Drawings.');
+                return;
+            }
         }
+
+        applySessionData(sessionData);
+        state.pendingSessionData = null;
+        showDrawingList();
     } catch (error) {
         alert('Failed to load session file: ' + error.message);
     } finally {
@@ -139,8 +281,8 @@ loadSessionFileInput.addEventListener('change', async (e) => {
     }
 });
 
-saveSessionBtn.addEventListener('click', () => {
-    downloadSessionFile();
+saveSessionBtn.addEventListener('click', async () => {
+    await downloadSessionFile();
 });
 
 function loadAlignmentData() {
@@ -174,6 +316,34 @@ function saveFlaggedData() {
     localStorage.setItem('flags_local', JSON.stringify(Array.from(state.flaggedDrawings)));
 }
 
+function loadNotesData() {
+    const saved = localStorage.getItem('notes_local');
+    if (saved) {
+        try {
+            const parsed = JSON.parse(saved);
+            state.drawingNotes = parsed && typeof parsed === 'object' ? parsed : {};
+        } catch (e) {
+            state.drawingNotes = {};
+        }
+    }
+}
+
+function saveNotesData() {
+    localStorage.setItem('notes_local', JSON.stringify(state.drawingNotes));
+}
+
+function getNote(filename) {
+    return (state.drawingNotes[filename] || '').trim();
+}
+
+function updateNoteButtonState() {
+    if (!state.currentDrawing) return;
+
+    const hasNote = Boolean(getNote(state.currentDrawing));
+    editNoteBtn.textContent = hasNote ? 'Edit Note' : 'Add Note';
+    editNoteBtn.classList.toggle('has-note', hasNote);
+}
+
 function updateFlagButtonState() {
     if (!state.currentDrawing) return;
 
@@ -192,12 +362,50 @@ function buildSessionData() {
         selectedDrawings: Array.from(state.selectedDrawings),
         viewedDrawings: Array.from(state.viewedDrawings),
         flaggedDrawings: Array.from(state.flaggedDrawings),
+        drawingNotes: state.drawingNotes,
+        folderHandles: {
+            originalStorageKey: ORIGINAL_HANDLE_KEY,
+            revisedStorageKey: REVISED_HANDLE_KEY,
+            originalName: state.originalFolderName,
+            revisedName: state.revisedFolderName
+        },
         alignmentData: state.alignmentData,
         letterFilter: state.currentLetterFilter
     };
 }
 
-function downloadSessionFile() {
+async function ensureStoredFolderHandlesForSession() {
+    if (!window.showDirectoryPicker) return;
+
+    try {
+        const hasOriginal = await getStoredFolderHandle(ORIGINAL_HANDLE_KEY);
+        if (!hasOriginal && state.originalFiles.length > 0) {
+            const originalHandle = await window.showDirectoryPicker({ id: 'original-folder-handle' });
+            if (originalHandle) {
+                await putStoredFolderHandle(ORIGINAL_HANDLE_KEY, originalHandle);
+                state.originalFolderName = state.originalFolderName || originalHandle.name || '';
+            }
+        }
+    } catch (error) {
+        console.warn('Original folder-handle capture skipped:', error);
+    }
+
+    try {
+        const hasRevised = await getStoredFolderHandle(REVISED_HANDLE_KEY);
+        if (!hasRevised && state.revisedFiles.length > 0) {
+            const revisedHandle = await window.showDirectoryPicker({ id: 'revised-folder-handle' });
+            if (revisedHandle) {
+                await putStoredFolderHandle(REVISED_HANDLE_KEY, revisedHandle);
+                state.revisedFolderName = state.revisedFolderName || revisedHandle.name || '';
+            }
+        }
+    } catch (error) {
+        console.warn('Revised folder-handle capture skipped:', error);
+    }
+}
+
+async function downloadSessionFile() {
+    await ensureStoredFolderHandlesForSession();
     const sessionData = buildSessionData();
     const blob = new Blob([JSON.stringify(sessionData, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
@@ -220,10 +428,23 @@ function applySessionData(sessionData) {
     const selected = Array.isArray(sessionData.selectedDrawings) ? sessionData.selectedDrawings : [];
     const viewed = Array.isArray(sessionData.viewedDrawings) ? sessionData.viewedDrawings : [];
     const flagged = Array.isArray(sessionData.flaggedDrawings) ? sessionData.flaggedDrawings : [];
+    const sessionNotes = sessionData.drawingNotes && typeof sessionData.drawingNotes === 'object'
+        ? sessionData.drawingNotes
+        : {};
 
     state.selectedDrawings = new Set(selected.filter(name => originalSet.has(name) && revisedSet.has(name)));
     state.viewedDrawings = new Set(viewed.filter(name => originalSet.has(name) && revisedSet.has(name)));
     state.flaggedDrawings = new Set(flagged.filter(name => originalSet.has(name) && revisedSet.has(name)));
+
+    state.drawingNotes = {};
+    Object.entries(sessionNotes).forEach(([name, value]) => {
+        if (!originalSet.has(name) || !revisedSet.has(name)) return;
+        if (typeof value !== 'string') return;
+        const trimmed = value.trim();
+        if (trimmed) {
+            state.drawingNotes[name] = trimmed;
+        }
+    });
 
     const alignmentData = sessionData.alignmentData && typeof sessionData.alignmentData === 'object'
         ? sessionData.alignmentData
@@ -247,6 +468,7 @@ function applySessionData(sessionData) {
 
     saveAlignmentData();
     saveFlaggedData();
+    saveNotesData();
 }
 
 loadFoldersBtn.addEventListener('click', async () => {
@@ -261,8 +483,15 @@ loadFoldersBtn.addEventListener('click', async () => {
     
     try {
         categorizeFiles();
+        if (!state.originalFolderName) {
+            state.originalFolderName = getFolderNameFromFiles(state.originalFiles);
+        }
+        if (!state.revisedFolderName) {
+            state.revisedFolderName = getFolderNameFromFiles(state.revisedFiles);
+        }
         loadAlignmentData();
         loadFlaggedData();
+        loadNotesData();
 
         if (state.pendingSessionData) {
             applySessionData(state.pendingSessionData);
@@ -336,7 +565,7 @@ function showDrawingList() {
 function populateList(listId, files, withCheckbox) {
     const listEl = document.getElementById(listId);
     listEl.innerHTML = '';
-    
+
     files.forEach(filename => {
         const itemEl = document.createElement('div');
         itemEl.className = 'drawing-item';
@@ -348,10 +577,10 @@ function populateList(listId, files, withCheckbox) {
         if (state.flaggedDrawings.has(filename)) {
             itemEl.classList.add('flagged');
         }
-        
+
         if (withCheckbox) {
             itemEl.classList.add('with-checkbox');
-            
+
             const checkbox = document.createElement('input');
             checkbox.type = 'checkbox';
             checkbox.checked = state.selectedDrawings.has(filename);
@@ -362,44 +591,38 @@ function populateList(listId, files, withCheckbox) {
                     state.selectedDrawings.delete(filename);
                 }
             });
-            
-            const span = document.createElement('span');
-            span.textContent = filename;
-            span.addEventListener('click', () => openComparison(filename));
-
-            const flagBtn = document.createElement('button');
-            flagBtn.type = 'button';
-            flagBtn.className = 'flag-toggle';
-            flagBtn.textContent = state.flaggedDrawings.has(filename) ? '★' : '☆';
-            flagBtn.title = 'Toggle significant-change flag';
-            flagBtn.classList.toggle('active', state.flaggedDrawings.has(filename));
-            flagBtn.addEventListener('click', (e) => {
-                e.stopPropagation();
-                toggleDrawingFlag(filename);
-            });
-            
             itemEl.appendChild(checkbox);
-            itemEl.appendChild(span);
-            itemEl.appendChild(flagBtn);
-        } else {
-            const span = document.createElement('span');
-            span.textContent = filename;
-
-            const flagBtn = document.createElement('button');
-            flagBtn.type = 'button';
-            flagBtn.className = 'flag-toggle';
-            flagBtn.textContent = state.flaggedDrawings.has(filename) ? '★' : '☆';
-            flagBtn.title = 'Toggle significant-change flag';
-            flagBtn.classList.toggle('active', state.flaggedDrawings.has(filename));
-            flagBtn.addEventListener('click', (e) => {
-                e.stopPropagation();
-                toggleDrawingFlag(filename);
-            });
-
-            itemEl.appendChild(span);
-            itemEl.appendChild(flagBtn);
         }
-        
+
+        const span = document.createElement('span');
+        span.textContent = filename;
+        span.addEventListener('click', () => openComparison(filename));
+
+        const noteBtn = document.createElement('button');
+        noteBtn.type = 'button';
+        noteBtn.className = 'note-toggle';
+        noteBtn.textContent = getNote(filename) ? '📝' : '🗒';
+        noteBtn.title = getNote(filename) ? 'View note' : 'Add note';
+        noteBtn.classList.toggle('active', Boolean(getNote(filename)));
+        noteBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            openSingleNoteModal(filename);
+        });
+
+        const flagBtn = document.createElement('button');
+        flagBtn.type = 'button';
+        flagBtn.className = 'flag-toggle';
+        flagBtn.textContent = state.flaggedDrawings.has(filename) ? '★' : '☆';
+        flagBtn.title = 'Toggle significant-change flag';
+        flagBtn.classList.toggle('active', state.flaggedDrawings.has(filename));
+        flagBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            toggleDrawingFlag(filename);
+        });
+
+        itemEl.appendChild(span);
+        itemEl.appendChild(noteBtn);
+        itemEl.appendChild(flagBtn);
         listEl.appendChild(itemEl);
     });
 }
@@ -614,6 +837,7 @@ async function openComparison(filename) {
         state.viewedDrawings.add(filename);
 
         updateFlagButtonState();
+        updateNoteButtonState();
         
         currentDrawingName.textContent = filename;
         
@@ -684,7 +908,8 @@ function renderComparison() {
     canvas.style.top = `${(containerHeight - canvas.height) / 2 + state.offsetY}px`;
     
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.imageSmoothingEnabled = false;
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
     ctx.drawImage(state.compositeCanvas, 0, 0, canvas.width, canvas.height);
     
     updateZoomDisplay();
@@ -856,6 +1081,99 @@ function renderOverlay(
     context.putImageData(outputData, 0, 0);
 }
 
+function openNotePanel() {
+    if (!state.currentDrawing) return;
+    noteTextarea.value = state.drawingNotes[state.currentDrawing] || '';
+    notePanel.style.display = 'flex';
+    noteTextarea.focus();
+}
+
+function closeNotePanel() {
+    notePanel.style.display = 'none';
+}
+
+function saveCurrentNote() {
+    if (!state.currentDrawing) return;
+    const text = noteTextarea.value.trim();
+
+    if (text) {
+        state.drawingNotes[state.currentDrawing] = text;
+    } else {
+        delete state.drawingNotes[state.currentDrawing];
+    }
+
+    saveNotesData();
+    updateNoteButtonState();
+    refreshDrawingLists();
+}
+
+function escapeHtml(value) {
+    return value
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#39;');
+}
+
+function openSingleNoteModal(filename) {
+    notesModalTitle.textContent = `Note: ${filename}`;
+    const note = getNote(filename);
+
+    if (!note) {
+        notesModalBody.innerHTML = '<p>No note saved for this drawing.</p>';
+    } else {
+        notesModalBody.innerHTML = `<div class="note-row"><div class="note-row-title">${escapeHtml(filename)}</div><div class="note-row-body">${escapeHtml(note).replaceAll('\n', '<br>')}</div></div>`;
+    }
+
+    notesModal.style.display = 'flex';
+}
+
+function openNotesModal() {
+    notesModalTitle.textContent = 'All Drawing Notes';
+    const entries = Object.entries(state.drawingNotes)
+        .filter(([, note]) => typeof note === 'string' && note.trim())
+        .sort(([a], [b]) => a.localeCompare(b));
+
+    if (entries.length === 0) {
+        notesModalBody.innerHTML = '<p>No notes yet.</p>';
+    } else {
+        notesModalBody.innerHTML = entries
+            .map(([name, note]) => `<div class="note-row"><div class="note-row-title">${escapeHtml(name)}</div><div class="note-row-body">${escapeHtml(note).replaceAll('\n', '<br>')}</div></div>`)
+            .join('');
+    }
+
+    notesModal.style.display = 'flex';
+}
+
+function closeNotesModal() {
+    notesModal.style.display = 'none';
+    notesModalTitle.textContent = 'All Drawing Notes';
+}
+
+function exportNotesToExcelCsv() {
+    const rows = [['Drawing', 'Note']];
+    const entries = Object.entries(state.drawingNotes)
+        .filter(([, note]) => typeof note === 'string' && note.trim())
+        .sort(([a], [b]) => a.localeCompare(b));
+
+    entries.forEach(([name, note]) => {
+        rows.push([name, note.trim()]);
+    });
+
+    const csv = rows
+        .map((row) => row.map((cell) => `"${String(cell).replaceAll('"', '""')}"`).join(','))
+        .join('\n');
+
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'drawing-notes.csv';
+    a.click();
+    URL.revokeObjectURL(url);
+}
+
 toggleOriginalCheckbox.addEventListener('change', () => {
     state.showOriginal = toggleOriginalCheckbox.checked;
     queueOverlayRebuildAndRender();
@@ -1012,6 +1330,30 @@ toggleFlagBtn.addEventListener('click', () => {
     toggleDrawingFlag(state.currentDrawing);
 });
 
+editNoteBtn.addEventListener('click', () => {
+    openNotePanel();
+});
+
+closeNotePanelBtn.addEventListener('click', () => {
+    closeNotePanel();
+});
+
+saveNoteBtn.addEventListener('click', () => {
+    saveCurrentNote();
+});
+
+seeAllNotesBtn.addEventListener('click', () => {
+    openNotesModal();
+});
+
+closeNotesModalBtn.addEventListener('click', () => {
+    closeNotesModal();
+});
+
+exportNotesBtn.addEventListener('click', () => {
+    exportNotesToExcelCsv();
+});
+
 alignOriginalBtn.addEventListener('click', () => {
     enterAlignMode('original');
 });
@@ -1050,6 +1392,7 @@ backToFoldersBtn.addEventListener('click', () => {
 });
 
 backToListBtn.addEventListener('click', () => {
+    closeNotePanel();
     comparisonView.style.display = 'none';
     drawingListView.style.display = 'flex';
     refreshDrawingLists();
