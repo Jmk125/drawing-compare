@@ -45,7 +45,12 @@ const state = {
     originalFolderName: '',
     revisedFolderName: '',
     drawingCategoryMap: {},
-    notesFilter: 'BOTH'
+    notesFilter: 'BOTH',
+    listScrollPositions: {
+        'original-only-list': 0,
+        'both-list': 0,
+        'revised-only-list': 0
+    }
 };
 
 state.compositeCanvas = document.createElement('canvas');
@@ -109,6 +114,9 @@ const notesModalTitle = document.getElementById('notes-modal-title');
 const notesFilterGroup = document.getElementById('notes-filter-group');
 const notesFilterSelect = document.getElementById('notes-filter-select');
 const exportNotesBtn = document.getElementById('export-notes');
+const originalOnlyListEl = document.getElementById('original-only-list');
+const bothListEl = document.getElementById('both-list');
+const revisedOnlyListEl = document.getElementById('revised-only-list');
 
 state.canvas = canvas;
 state.ctx = ctx;
@@ -625,6 +633,24 @@ function categorizeFiles() {
     });
 }
 
+function captureDrawingListScrollPositions() {
+    state.listScrollPositions['original-only-list'] = originalOnlyListEl ? originalOnlyListEl.scrollTop : 0;
+    state.listScrollPositions['both-list'] = bothListEl ? bothListEl.scrollTop : 0;
+    state.listScrollPositions['revised-only-list'] = revisedOnlyListEl ? revisedOnlyListEl.scrollTop : 0;
+}
+
+function restoreDrawingListScrollPositions() {
+    if (originalOnlyListEl) {
+        originalOnlyListEl.scrollTop = state.listScrollPositions['original-only-list'] || 0;
+    }
+    if (bothListEl) {
+        bothListEl.scrollTop = state.listScrollPositions['both-list'] || 0;
+    }
+    if (revisedOnlyListEl) {
+        revisedOnlyListEl.scrollTop = state.listScrollPositions['revised-only-list'] || 0;
+    }
+}
+
 function showDrawingList() {
     document.getElementById('original-only-count').textContent = state.originalOnlyFiles.length;
     document.getElementById('revised-only-count').textContent = state.revisedOnlyFiles.length;
@@ -737,9 +763,13 @@ function buildLetterFilterOptions() {
 }
 
 function refreshDrawingLists() {
+    captureDrawingListScrollPositions();
+
     populateList('original-only-list', getFilteredFiles(state.originalOnlyFiles), false);
     populateList('revised-only-list', getFilteredFiles(state.revisedOnlyFiles), false);
     populateList('both-list', getFilteredFiles(state.bothFiles), true);
+
+    restoreDrawingListScrollPositions();
 }
 
 function toggleDrawingFlag(filename) {
@@ -869,6 +899,7 @@ async function createBlankImage(width, height) {
 }
 
 async function openComparison(filename) {
+    captureDrawingListScrollPositions();
     state.currentDrawing = filename;
     currentDrawingName.textContent = filename + ' - Loading...';
 
@@ -1538,6 +1569,7 @@ backToListBtn.addEventListener('click', () => {
     comparisonView.style.display = 'none';
     drawingListView.style.display = 'flex';
     refreshDrawingLists();
+    restoreDrawingListScrollPositions();
 });
 
 window.addEventListener('resize', () => {
