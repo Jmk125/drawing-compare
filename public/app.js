@@ -57,6 +57,10 @@ state.tempRevisedCtx = state.tempRevisedCanvas.getContext('2d', { willReadFreque
 state.needsOverlayRebuild = true;
 state.overlayRebuildFrame = null;
 
+const ALIGN_PREVIEW_SCALE = 0.22;
+const ALIGN_PREVIEW_MAX_FPS = 20;
+const MARK_THRESHOLD = 0.02;
+
 // DOM Elements
 const folderSelectionView = document.getElementById('folder-selection');
 const drawingListView = document.getElementById('drawing-list');
@@ -1017,7 +1021,7 @@ function queueOverlayRebuildAndRender(isAlignmentDrag = false) {
     if (isAlignmentDrag) {
         const now = performance.now();
         const elapsed = now - state.lastAlignRenderTime;
-        const waitMs = Math.max(0, 33 - elapsed);
+        const waitMs = Math.max(0, Math.round(1000 / ALIGN_PREVIEW_MAX_FPS) - elapsed);
 
         state.overlayRebuildFrame = window.setTimeout(() => {
             state.overlayRebuildFrame = null;
@@ -1039,7 +1043,7 @@ function rebuildCompositeOverlay() {
 
     state.needsOverlayRebuild = false;
 
-    const scaleFactor = state.isAlignmentPreview ? 0.35 : 1;
+    const scaleFactor = state.isAlignmentPreview ? ALIGN_PREVIEW_SCALE : 1;
     const targetWidth = Math.max(1, Math.floor(originalImg.width * scaleFactor));
     const targetHeight = Math.max(1, Math.floor(originalImg.height * scaleFactor));
 
@@ -1084,36 +1088,46 @@ function writeOverlayPixels(originalPixels, revisedPixels, outputPixels, showOri
         const origR = originalPixels[i];
         const origG = originalPixels[i + 1];
         const origB = originalPixels[i + 2];
-        const origA = originalPixels[i + 3];
+        const origA = originalPixels[i + 3] / 255;
 
         const revR = revisedPixels[i];
         const revG = revisedPixels[i + 1];
         const revB = revisedPixels[i + 2];
-        const revA = revisedPixels[i + 3];
+        const revA = revisedPixels[i + 3] / 255;
 
-        const origMarked = origA > 10 && (origR < 250 || origG < 250 || origB < 250);
-        const revMarked = revA > 10 && (revR < 250 || revG < 250 || revB < 250);
+        const origLuma = (0.2126 * origR + 0.7152 * origG + 0.0722 * origB) / 255;
+        const revLuma = (0.2126 * revR + 0.7152 * revG + 0.0722 * revB) / 255;
+
+        const origStrength = Math.max(0, (1 - origLuma) * origA);
+        const revStrength = Math.max(0, (1 - revLuma) * revA);
+
+        const origMarked = origStrength > MARK_THRESHOLD;
+        const revMarked = revStrength > MARK_THRESHOLD;
 
         if (origMarked && revMarked) {
-            outputPixels[i] = 0;
-            outputPixels[i + 1] = 0;
-            outputPixels[i + 2] = 0;
-            outputPixels[i + 3] = 255;
+            const shade = Math.round(Math.min(origLuma, revLuma) * 255);
+            const alpha = Math.max(origStrength, revStrength);
+            outputPixels[i] = shade;
+            outputPixels[i + 1] = shade;
+            outputPixels[i + 2] = shade;
+            outputPixels[i + 3] = Math.max(110, Math.min(255, Math.round(alpha * 255)));
         } else if (origMarked && !revMarked) {
             if (showOriginal) {
-                outputPixels[i] = 0;
-                outputPixels[i + 1] = 0;
-                outputPixels[i + 2] = 255;
-                outputPixels[i + 3] = 255;
+                const base = Math.round(origLuma * 255);
+                outputPixels[i] = Math.round(base * 0.35);
+                outputPixels[i + 1] = Math.round(base * 0.35);
+                outputPixels[i + 2] = Math.min(255, Math.round(base * 0.8 + 110));
+                outputPixels[i + 3] = Math.max(90, Math.min(255, Math.round(origStrength * 255)));
             } else {
                 outputPixels[i + 3] = 0;
             }
         } else if (!origMarked && revMarked) {
             if (showRevised) {
-                outputPixels[i] = 255;
-                outputPixels[i + 1] = 0;
-                outputPixels[i + 2] = 0;
-                outputPixels[i + 3] = 255;
+                const base = Math.round(revLuma * 255);
+                outputPixels[i] = Math.min(255, Math.round(base * 0.8 + 110));
+                outputPixels[i + 1] = Math.round(base * 0.35);
+                outputPixels[i + 2] = Math.round(base * 0.35);
+                outputPixels[i + 3] = Math.max(90, Math.min(255, Math.round(revStrength * 255)));
             } else {
                 outputPixels[i + 3] = 0;
             }
@@ -1122,6 +1136,7 @@ function writeOverlayPixels(originalPixels, revisedPixels, outputPixels, showOri
         }
     }
 }
+
 
 function updateCanvasPosition() {
     const container = canvasContainer;
