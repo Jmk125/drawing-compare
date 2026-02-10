@@ -181,6 +181,9 @@ body {
 }
 
 .drawing-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
     padding: 12px;
     margin-bottom: 8px;
     background: #f8f9fa;
@@ -195,6 +198,15 @@ body {
     border-left-color: #3498db;
 }
 
+.drawing-item.viewed {
+    background: #e8f4ff;
+    border-left-color: #74b9ff;
+}
+
+.drawing-item.viewed:hover {
+    background: #dbeeff;
+}
+
 .drawing-item.with-checkbox {
     display: flex;
     align-items: center;
@@ -207,6 +219,36 @@ body {
 
 .drawing-item.with-checkbox span {
     flex: 1;
+}
+
+.drawing-item > span {
+    flex: 1;
+}
+
+.drawing-item.flagged {
+    border-left-color: #f39c12;
+}
+
+.flag-toggle {
+    margin-left: auto;
+    border: 1px solid #d0d7de;
+    background: #fff;
+    color: #8a8f98;
+    width: 28px;
+    height: 28px;
+    border-radius: 4px;
+    cursor: pointer;
+}
+
+.flag-toggle.active {
+    color: #f39c12;
+    border-color: #f39c12;
+}
+
+#toggle-flag.flagged {
+    background: #f39c12;
+    color: #fff;
+    border-color: #e67e22;
 }
 
 /* Comparison View */
