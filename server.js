@@ -12,7 +12,7 @@ const crypto = require('crypto');
 
 const app = express();
 const PORT = 3500;
-const PDF_CONVERSION_DPI = Number(process.env.PDF_CONVERSION_DPI || 120);
+const PDF_CONVERSION_DPI = Number(process.env.PDF_CONVERSION_DPI || 144);
 const MAX_CONVERSION_CACHE_ITEMS = Number(process.env.MAX_CONVERSION_CACHE_ITEMS || 120);
 const conversionCache = new Map();
 
@@ -76,7 +76,20 @@ app.post('/api/convert-pdf', upload.single('pdf'), async (req, res) => {
             });
         }
 
-        await execPromise(`pdftoppm -f 1 -singlefile -png -r ${PDF_CONVERSION_DPI} "${pdfPath}" "${outputPath.replace('.png', '')}"`);
+        const pdftoppmArgs = [
+            'pdftoppm',
+            '-f', '1',
+            '-singlefile',
+            '-png',
+            '-r', String(PDF_CONVERSION_DPI),
+            '-aa', 'yes',
+            '-aaVector', 'yes',
+            '-thinlinemode', 'shape',
+            `"${pdfPath}"`,
+            `"${outputPath.replace('.png', '')}"`
+        ];
+
+        await execPromise(pdftoppmArgs.join(' '));
 
         const imageBuffer = await fs.readFile(outputPath);
         const imageBase64 = imageBuffer.toString('base64');

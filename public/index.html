@@ -44,6 +44,7 @@
                     <select id="letter-filter">
                         <option value="ALL">All</option>
                     </select>
+                    <button id="see-all-notes" class="btn-small">See All Notes</button>
                     <button id="save-session" class="btn-small">Save Session</button>
                     <button id="back-to-folders" class="btn-secondary">Change Folders</button>
                 </div>
@@ -79,6 +80,7 @@
                 <div class="controls">
                     <button id="align-button" class="btn-primary">Align Drawings</button>
                     <button id="toggle-flag" class="btn-small">Flag Significant Change</button>
+                    <button id="edit-note" class="btn-small">Add / Edit Note</button>
                     <label><input type="checkbox" id="toggle-original" checked> Show Original (Blue)</label>
                     <label><input type="checkbox" id="toggle-revised" checked> Show Revised (Red)</label>
                     <button id="reset-view" class="btn-secondary">Reset View</button>
@@ -99,11 +101,43 @@
             
             <div id="canvas-container">
                 <canvas id="comparison-canvas"></canvas>
+                <div id="note-panel" class="note-panel" style="display: none;">
+                    <div class="note-panel-header">
+                        <strong>Drawing Note</strong>
+                        <button id="close-note-panel" class="btn-small">✕</button>
+                    </div>
+                    <textarea id="note-textarea" placeholder="Add notes about this drawing..." rows="6"></textarea>
+                    <div class="note-panel-actions">
+                        <button id="save-note" class="btn-primary">Save Note</button>
+                    </div>
+                </div>
             </div>
             
             <div class="zoom-info">
                 <span id="zoom-level">100%</span> | 
                 <span>Right-click + drag to pan | Scroll to zoom</span>
+            </div>
+        </div>
+
+        <div id="notes-modal" class="modal" style="display: none;">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h3 id="notes-modal-title">All Drawing Notes</h3>
+                    <div class="notes-header-actions">
+                        <label id="notes-filter-group" for="notes-filter-select">Set:</label>
+                        <select id="notes-filter-select">
+                            <option value="BOTH">Both Sets</option>
+                            <option value="ORIGINAL_ONLY">Original Only</option>
+                            <option value="REVISED_ONLY">Revised Only</option>
+                            <option value="ALL">All</option>
+                        </select>
+                        <button id="close-notes-modal" class="btn-small">Close</button>
+                    </div>
+                </div>
+                <div id="notes-modal-body" class="notes-modal-body"></div>
+                <div class="modal-actions">
+                    <button id="export-notes" class="btn-primary">Export to Excel (CSV)</button>
+                </div>
             </div>
         </div>
     </div>
