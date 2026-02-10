@@ -182,6 +182,32 @@ async function getStoredFolderHandle(key) {
     return result;
 }
 
+async function promptForFolderRelocation(storageKey, label, expectedName = '') {
+    if (!window.showDirectoryPicker) return null;
+
+    const nameHint = expectedName ? ` (${expectedName})` : '';
+    const shouldRelocate = window.confirm(
+        `Saved session could not automatically access the ${label} folder${nameHint}.
+
+Click OK to locate it now.`
+    );
+
+    if (!shouldRelocate) {
+        return null;
+    }
+
+    try {
+        const handle = await window.showDirectoryPicker({ id: storageKey });
+        if (handle) {
+            await putStoredFolderHandle(storageKey, handle);
+        }
+        return handle;
+    } catch (error) {
+        console.warn(`Folder relocation cancelled for ${label}:`, error);
+        return null;
+    }
+}
+
 async function collectPdfFilesFromDirectoryHandle(directoryHandle, files = []) {
     for await (const entry of directoryHandle.values()) {
         if (entry.kind === 'file' && entry.name.toLowerCase().endsWith('.pdf')) {
@@ -212,19 +238,24 @@ async function tryRestoreFoldersFromSession(sessionData) {
     const info = sessionData.folderHandles;
     if (!info || typeof info !== 'object') return false;
 
+    const originalKey = info.originalStorageKey || ORIGINAL_HANDLE_KEY;
+    const revisedKey = info.revisedStorageKey || REVISED_HANDLE_KEY;
+
+    let originalHandle = await getStoredFolderHandle(originalKey);
+    let revisedHandle = await getStoredFolderHandle(revisedKey);
+
+    if (!originalHandle) {
+        originalHandle = await promptForFolderRelocation(originalKey, 'Original', info.originalName || '');
+    }
+    if (!revisedHandle) {
+        revisedHandle = await promptForFolderRelocation(revisedKey, 'Revised', info.revisedName || '');
+    }
+
+    if (!originalHandle || !revisedHandle) {
+        return false;
+    }
+
     try {
-        const originalKey = info.originalStorageKey || ORIGINAL_HANDLE_KEY;
-        const revisedKey = info.revisedStorageKey || REVISED_HANDLE_KEY;
-
-        const [originalHandle, revisedHandle] = await Promise.all([
-            getStoredFolderHandle(originalKey),
-            getStoredFolderHandle(revisedKey)
-        ]);
-
-        if (!originalHandle || !revisedHandle) {
-            return false;
-        }
-
         const [originalFiles, revisedFiles] = await Promise.all([
             loadFilesFromStoredFolderHandle(originalHandle),
             loadFilesFromStoredFolderHandle(revisedHandle)
@@ -239,9 +270,31 @@ async function tryRestoreFoldersFromSession(sessionData) {
         return true;
     } catch (error) {
         console.warn('Unable to restore folders from session handles:', error);
-        return false;
+
+        originalHandle = await promptForFolderRelocation(originalKey, 'Original', info.originalName || '');
+        revisedHandle = await promptForFolderRelocation(revisedKey, 'Revised', info.revisedName || '');
+        if (!originalHandle || !revisedHandle) return false;
+
+        try {
+            const [originalFiles, revisedFiles] = await Promise.all([
+                loadFilesFromStoredFolderHandle(originalHandle),
+                loadFilesFromStoredFolderHandle(revisedHandle)
+            ]);
+
+            if (originalFiles.length === 0 || revisedFiles.length === 0) {
+                return false;
+            }
+
+            setOriginalFiles(originalFiles, info.originalName || originalHandle.name || '');
+            setRevisedFiles(revisedFiles, info.revisedName || revisedHandle.name || '');
+            return true;
+        } catch (retryError) {
+            console.warn('Retry restore failed:', retryError);
+            return false;
+        }
     }
 }
+
 
 originalFolderInput.addEventListener('change', (e) => {
     const files = Array.from(e.target.files).filter(f => f.name.toLowerCase().endsWith('.pdf'));
@@ -365,6 +418,7 @@ function buildSessionData() {
         revisedFiles: state.revisedFiles.map(f => f.name).sort(),
         selectedDrawings: Array.from(state.selectedDrawings),
         viewedDrawings: Array.from(state.viewedDrawings),
+        viewedFiles: Array.from(state.viewedDrawings),
         flaggedDrawings: Array.from(state.flaggedDrawings),
         drawingNotes: state.drawingNotes,
         folderHandles: {
@@ -431,7 +485,9 @@ function applySessionData(sessionData) {
     const availableSet = new Set([...originalSet, ...revisedSet]);
 
     const selected = Array.isArray(sessionData.selectedDrawings) ? sessionData.selectedDrawings : [];
-    const viewed = Array.isArray(sessionData.viewedDrawings) ? sessionData.viewedDrawings : [];
+    const viewed = Array.isArray(sessionData.viewedDrawings)
+        ? sessionData.viewedDrawings
+        : (Array.isArray(sessionData.viewedFiles) ? sessionData.viewedFiles : []);
     const flagged = Array.isArray(sessionData.flaggedDrawings) ? sessionData.flaggedDrawings : [];
     const sessionNotes = sessionData.drawingNotes && typeof sessionData.drawingNotes === 'object'
         ? sessionData.drawingNotes
@@ -444,16 +500,6 @@ function applySessionData(sessionData) {
     state.drawingNotes = {};
     Object.entries(sessionNotes).forEach(([name, value]) => {
         if (!availableSet.has(name)) return;
-        if (typeof value !== 'string') return;
-        const trimmed = value.trim();
-        if (trimmed) {
-            state.drawingNotes[name] = trimmed;
-        }
-    });
-
-    state.drawingNotes = {};
-    Object.entries(sessionNotes).forEach(([name, value]) => {
-        if (!originalSet.has(name) || !revisedSet.has(name)) return;
         if (typeof value !== 'string') return;
         const trimmed = value.trim();
         if (trimmed) {
