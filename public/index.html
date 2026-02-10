@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PDF Drawing Comparator</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div id="app">
+        <!-- Folder Selection View -->
+        <div id="folder-selection" class="view">
+            <h1>PDF Drawing Comparator</h1>
+            <div class="folder-inputs">
+                <div class="input-group">
+                    <label for="original-folder">Original Folder:</label>
+                    <input type="file" id="original-folder" webkitdirectory directory multiple />
+                    <p class="file-count" id="original-count">No files selected</p>
+                </div>
+                <div class="input-group">
+                    <label for="revised-folder">Revised Folder:</label>
+                    <input type="file" id="revised-folder" webkitdirectory directory multiple />
+                    <p class="file-count" id="revised-count">No files selected</p>
+                </div>
+                <button id="load-folders" class="btn-primary">Load Drawings</button>
+            </div>
+            <div id="loading-message" style="display: none;">
+                <p>Loading drawings...</p>
+            </div>
+            <div id="error-message" style="display: none;" class="error"></div>
+        </div>
+
+        <!-- Drawing List View -->
+        <div id="drawing-list" class="view" style="display: none;">
+            <div class="header">
+                <h1>Drawing Comparison</h1>
+                <button id="back-to-folders" class="btn-secondary">Change Folders</button>
+            </div>
+            
+            <div class="list-container">
+                <div class="list-column">
+                    <h3>Original Only (<span id="original-only-count">0</span>)</h3>
+                    <div id="original-only-list" class="drawing-list"></div>
+                </div>
+                
+                <div class="list-column main-column">
+                    <h3>Both Sets (<span id="both-count">0</span>)</h3>
+                    <div class="export-controls">
+                        <button id="select-all" class="btn-small">Select All</button>
+                        <button id="deselect-all" class="btn-small">Deselect All</button>
+                        <button id="export-selected" class="btn-primary">Export Selected</button>
+                    </div>
+                    <div id="both-list" class="drawing-list"></div>
+                </div>
+                
+                <div class="list-column">
+                    <h3>Revised Only (<span id="revised-only-count">0</span>)</h3>
+                    <div id="revised-only-list" class="drawing-list"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Comparison View -->
+        <div id="comparison-view" class="view" style="display: none;">
+            <div class="header">
+                <h2 id="current-drawing-name"></h2>
+                <div class="controls">
+                    <button id="align-button" class="btn-primary">Align Drawings</button>
+                    <label><input type="checkbox" id="toggle-original" checked> Show Original (Blue)</label>
+                    <label><input type="checkbox" id="toggle-revised" checked> Show Revised (Red)</label>
+                    <button id="reset-view" class="btn-secondary">Reset View</button>
+                    <button id="back-to-list" class="btn-secondary">Back to List</button>
+                </div>
+            </div>
+            
+            <div id="align-instructions" class="align-instructions" style="display: none;">
+                <p>Select which drawing to move:</p>
+                <button id="align-original" class="btn-primary">Move Original</button>
+                <button id="align-revised" class="btn-primary">Move Revised</button>
+                <button id="cancel-align" class="btn-secondary">Cancel</button>
+            </div>
+            
+            <div id="align-active-message" class="align-active-message" style="display: none;">
+                <p>Click and drag to align the drawing. Click again to release.</p>
+            </div>
+            
+            <div id="canvas-container">
+                <canvas id="comparison-canvas"></canvas>
+            </div>
+            
+            <div class="zoom-info">
+                <span id="zoom-level">100%</span> | 
+                <span>Right-click + drag to pan | Scroll to zoom</span>
+            </div>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
