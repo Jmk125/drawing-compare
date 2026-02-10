@@ -34,8 +34,23 @@ const state = {
     alignDragging: false,
     alignDragStartX: 0,
     alignDragStartY: 0,
-    selectedDrawings: new Set()
+    selectedDrawings: new Set(),
+    viewedDrawings: new Set(),
+    flaggedDrawings: new Set(),
+    lastAlignRenderTime: 0,
+    currentLetterFilter: 'ALL',
+    isAlignmentPreview: false,
+    pendingSessionData: null
 };
+
+state.compositeCanvas = document.createElement('canvas');
+state.compositeCtx = state.compositeCanvas.getContext('2d');
+state.tempOriginalCanvas = document.createElement('canvas');
+state.tempOriginalCtx = state.tempOriginalCanvas.getContext('2d', { willReadFrequently: true });
+state.tempRevisedCanvas = document.createElement('canvas');
+state.tempRevisedCtx = state.tempRevisedCanvas.getContext('2d', { willReadFrequently: true });
+state.needsOverlayRebuild = true;
+state.overlayRebuildFrame = null;
 
 // DOM Elements
 const folderSelectionView = document.getElementById('folder-selection');
@@ -46,9 +61,13 @@ const revisedFolderInput = document.getElementById('revised-folder');
 const originalCountEl = document.getElementById('original-count');
 const revisedCountEl = document.getElementById('revised-count');
 const loadFoldersBtn = document.getElementById('load-folders');
+const loadSessionBtn = document.getElementById('load-session');
+const loadSessionFileInput = document.getElementById('load-session-file');
+const saveSessionBtn = document.getElementById('save-session');
 const loadingMessage = document.getElementById('loading-message');
 const errorMessage = document.getElementById('error-message');
 const backToFoldersBtn = document.getElementById('back-to-folders');
+const letterFilterSelect = document.getElementById('letter-filter');
 const backToListBtn = document.getElementById('back-to-list');
 const canvas = document.getElementById('comparison-canvas');
 const ctx = canvas.getContext('2d');
@@ -62,6 +81,7 @@ const alignButton = document.getElementById('align-button');
 const alignInstructions = document.getElementById('align-instructions');
 const alignOriginalBtn = document.getElementById('align-original');
 const alignRevisedBtn = document.getElementById('align-revised');
+const toggleFlagBtn = document.getElementById('toggle-flag');
 const cancelAlignBtn = document.getElementById('cancel-align');
 const alignActiveMessage = document.getElementById('align-active-message');
 const selectAllBtn = document.getElementById('select-all');
@@ -91,6 +111,38 @@ revisedFolderInput.addEventListener('change', (e) => {
     revisedCountEl.textContent = `${files.length} PDF files selected`;
 });
 
+
+loadSessionBtn.addEventListener('click', () => {
+    loadSessionFileInput.click();
+});
+
+loadSessionFileInput.addEventListener('change', async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    try {
+        const text = await file.text();
+        const sessionData = JSON.parse(text);
+        state.pendingSessionData = sessionData;
+
+        if (state.originalFiles.length > 0 && state.revisedFiles.length > 0) {
+            applySessionData(sessionData);
+            state.pendingSessionData = null;
+            showDrawingList();
+        } else {
+            alert('Session file loaded. Now select both folders and click Load Drawings to apply it.');
+        }
+    } catch (error) {
+        alert('Failed to load session file: ' + error.message);
+    } finally {
+        loadSessionFileInput.value = '';
+    }
+});
+
+saveSessionBtn.addEventListener('click', () => {
+    downloadSessionFile();
+});
+
 function loadAlignmentData() {
     const saved = localStorage.getItem('alignments_local');
     if (saved) {
@@ -106,6 +158,97 @@ function saveAlignmentData() {
     localStorage.setItem('alignments_local', JSON.stringify(state.alignmentData));
 }
 
+function loadFlaggedData() {
+    const saved = localStorage.getItem('flags_local');
+    if (saved) {
+        try {
+            const parsed = JSON.parse(saved);
+            state.flaggedDrawings = new Set(Array.isArray(parsed) ? parsed : []);
+        } catch (e) {
+            state.flaggedDrawings = new Set();
+        }
+    }
+}
+
+function saveFlaggedData() {
+    localStorage.setItem('flags_local', JSON.stringify(Array.from(state.flaggedDrawings)));
+}
+
+function updateFlagButtonState() {
+    if (!state.currentDrawing) return;
+
+    const flagged = state.flaggedDrawings.has(state.currentDrawing);
+    toggleFlagBtn.textContent = flagged ? 'Unflag Significant Change' : 'Flag Significant Change';
+    toggleFlagBtn.classList.toggle('flagged', flagged);
+}
+
+
+function buildSessionData() {
+    return {
+        version: 1,
+        savedAt: new Date().toISOString(),
+        originalFiles: state.originalFiles.map(f => f.name).sort(),
+        revisedFiles: state.revisedFiles.map(f => f.name).sort(),
+        selectedDrawings: Array.from(state.selectedDrawings),
+        viewedDrawings: Array.from(state.viewedDrawings),
+        flaggedDrawings: Array.from(state.flaggedDrawings),
+        alignmentData: state.alignmentData,
+        letterFilter: state.currentLetterFilter
+    };
+}
+
+function downloadSessionFile() {
+    const sessionData = buildSessionData();
+    const blob = new Blob([JSON.stringify(sessionData, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    a.href = url;
+    a.download = `drawing-session-${timestamp}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+}
+
+function applySessionData(sessionData) {
+    if (!sessionData || typeof sessionData !== 'object') {
+        throw new Error('Invalid session file format');
+    }
+
+    const originalSet = new Set(state.originalFiles.map(f => f.name));
+    const revisedSet = new Set(state.revisedFiles.map(f => f.name));
+
+    const selected = Array.isArray(sessionData.selectedDrawings) ? sessionData.selectedDrawings : [];
+    const viewed = Array.isArray(sessionData.viewedDrawings) ? sessionData.viewedDrawings : [];
+    const flagged = Array.isArray(sessionData.flaggedDrawings) ? sessionData.flaggedDrawings : [];
+
+    state.selectedDrawings = new Set(selected.filter(name => originalSet.has(name) && revisedSet.has(name)));
+    state.viewedDrawings = new Set(viewed.filter(name => originalSet.has(name) && revisedSet.has(name)));
+    state.flaggedDrawings = new Set(flagged.filter(name => originalSet.has(name) && revisedSet.has(name)));
+
+    const alignmentData = sessionData.alignmentData && typeof sessionData.alignmentData === 'object'
+        ? sessionData.alignmentData
+        : {};
+
+    state.alignmentData = {};
+    Object.entries(alignmentData).forEach(([name, value]) => {
+        if (!originalSet.has(name) || !revisedSet.has(name)) return;
+        if (!value || typeof value !== 'object') return;
+
+        state.alignmentData[name] = {
+            originalOffsetX: Number(value.originalOffsetX) || 0,
+            originalOffsetY: Number(value.originalOffsetY) || 0,
+            revisedOffsetX: Number(value.revisedOffsetX) || 0,
+            revisedOffsetY: Number(value.revisedOffsetY) || 0
+        };
+    });
+
+    const requestedFilter = sessionData.letterFilter;
+    state.currentLetterFilter = typeof requestedFilter === 'string' ? requestedFilter.toUpperCase() : 'ALL';
+
+    saveAlignmentData();
+    saveFlaggedData();
+}
+
 loadFoldersBtn.addEventListener('click', async () => {
     if (state.originalFiles.length === 0 || state.revisedFiles.length === 0) {
         showError('Please select both original and revised folders');
@@ -119,6 +262,13 @@ loadFoldersBtn.addEventListener('click', async () => {
     try {
         categorizeFiles();
         loadAlignmentData();
+        loadFlaggedData();
+
+        if (state.pendingSessionData) {
+            applySessionData(state.pendingSessionData);
+            state.pendingSessionData = null;
+        }
+
         showDrawingList();
         
     } catch (error) {
@@ -174,10 +324,10 @@ function showDrawingList() {
     document.getElementById('original-only-count').textContent = state.originalOnlyFiles.length;
     document.getElementById('revised-only-count').textContent = state.revisedOnlyFiles.length;
     document.getElementById('both-count').textContent = state.bothFiles.length;
+
+    buildLetterFilterOptions();
     
-    populateList('original-only-list', state.originalOnlyFiles, false);
-    populateList('revised-only-list', state.revisedOnlyFiles, false);
-    populateList('both-list', state.bothFiles, true);
+    refreshDrawingLists();
     
     folderSelectionView.style.display = 'none';
     drawingListView.style.display = 'flex';
@@ -190,6 +340,14 @@ function populateList(listId, files, withCheckbox) {
     files.forEach(filename => {
         const itemEl = document.createElement('div');
         itemEl.className = 'drawing-item';
+
+        if (state.viewedDrawings.has(filename)) {
+            itemEl.classList.add('viewed');
+        }
+
+        if (state.flaggedDrawings.has(filename)) {
+            itemEl.classList.add('flagged');
+        }
         
         if (withCheckbox) {
             itemEl.classList.add('with-checkbox');
@@ -208,25 +366,108 @@ function populateList(listId, files, withCheckbox) {
             const span = document.createElement('span');
             span.textContent = filename;
             span.addEventListener('click', () => openComparison(filename));
+
+            const flagBtn = document.createElement('button');
+            flagBtn.type = 'button';
+            flagBtn.className = 'flag-toggle';
+            flagBtn.textContent = state.flaggedDrawings.has(filename) ? '★' : '☆';
+            flagBtn.title = 'Toggle significant-change flag';
+            flagBtn.classList.toggle('active', state.flaggedDrawings.has(filename));
+            flagBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                toggleDrawingFlag(filename);
+            });
             
             itemEl.appendChild(checkbox);
             itemEl.appendChild(span);
+            itemEl.appendChild(flagBtn);
         } else {
-            itemEl.textContent = filename;
+            const span = document.createElement('span');
+            span.textContent = filename;
+
+            const flagBtn = document.createElement('button');
+            flagBtn.type = 'button';
+            flagBtn.className = 'flag-toggle';
+            flagBtn.textContent = state.flaggedDrawings.has(filename) ? '★' : '☆';
+            flagBtn.title = 'Toggle significant-change flag';
+            flagBtn.classList.toggle('active', state.flaggedDrawings.has(filename));
+            flagBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                toggleDrawingFlag(filename);
+            });
+
+            itemEl.appendChild(span);
+            itemEl.appendChild(flagBtn);
         }
         
         listEl.appendChild(itemEl);
     });
 }
 
+function getFilteredFiles(files) {
+    if (state.currentLetterFilter === 'ALL') {
+        return files;
+    }
+
+    return files.filter(name => name.toUpperCase().startsWith(state.currentLetterFilter));
+}
+
+function buildLetterFilterOptions() {
+    const letters = new Set();
+
+    [...state.originalOnlyFiles, ...state.revisedOnlyFiles, ...state.bothFiles].forEach((name) => {
+        if (!name) return;
+        letters.add(name[0].toUpperCase());
+    });
+
+    const sorted = Array.from(letters).sort((a, b) => a.localeCompare(b));
+    letterFilterSelect.innerHTML = '<option value="ALL">All</option>';
+
+    sorted.forEach((letter) => {
+        const opt = document.createElement('option');
+        opt.value = letter;
+        opt.textContent = letter;
+        letterFilterSelect.appendChild(opt);
+    });
+
+    if (!sorted.includes(state.currentLetterFilter)) {
+        state.currentLetterFilter = 'ALL';
+    }
+
+    letterFilterSelect.value = state.currentLetterFilter;
+}
+
+function refreshDrawingLists() {
+    populateList('original-only-list', getFilteredFiles(state.originalOnlyFiles), false);
+    populateList('revised-only-list', getFilteredFiles(state.revisedOnlyFiles), false);
+    populateList('both-list', getFilteredFiles(state.bothFiles), true);
+}
+
+function toggleDrawingFlag(filename) {
+    if (state.flaggedDrawings.has(filename)) {
+        state.flaggedDrawings.delete(filename);
+    } else {
+        state.flaggedDrawings.add(filename);
+    }
+
+    saveFlaggedData();
+    refreshDrawingLists();
+    updateFlagButtonState();
+}
+
 selectAllBtn.addEventListener('click', () => {
     state.bothFiles.forEach(f => state.selectedDrawings.add(f));
-    populateList('both-list', state.bothFiles, true);
+    refreshDrawingLists();
 });
 
 deselectAllBtn.addEventListener('click', () => {
     state.selectedDrawings.clear();
-    populateList('both-list', state.bothFiles, true);
+    refreshDrawingLists();
+});
+
+letterFilterSelect.addEventListener('change', () => {
+    state.currentLetterFilter = letterFilterSelect.value;
+    refreshDrawingLists();
 });
 
 exportSelectedBtn.addEventListener('click', async () => {
@@ -366,8 +607,13 @@ async function openComparison(filename) {
         state.offsetY = 0;
         state.showOriginal = true;
         state.showRevised = true;
+        state.needsOverlayRebuild = true;
         toggleOriginalCheckbox.checked = true;
         toggleRevisedCheckbox.checked = true;
+
+        state.viewedDrawings.add(filename);
+
+        updateFlagButtonState();
         
         currentDrawingName.textContent = filename;
         
@@ -410,6 +656,14 @@ async function preloadNearbyDrawings(currentFilename) {
 }
 
 function renderComparison() {
+    if (!state.originalImage || !state.revisedImage) {
+        return;
+    }
+
+    if (state.needsOverlayRebuild) {
+        rebuildCompositeOverlay();
+    }
+
     const container = canvasContainer;
     const containerWidth = container.clientWidth;
     const containerHeight = container.clientHeight;
@@ -430,25 +684,127 @@ function renderComparison() {
     canvas.style.top = `${(containerHeight - canvas.height) / 2 + state.offsetY}px`;
     
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-    
-    ctx.save();
-    ctx.scale(displayScale, displayScale);
-    
-    renderOverlay(
-        ctx,
-        state.originalImage,
-        state.revisedImage,
-        state.showOriginal,
-        state.showRevised,
-        state.originalAlignOffsetX,
-        state.originalAlignOffsetY,
-        state.revisedAlignOffsetX,
-        state.revisedAlignOffsetY
-    );
-    
-    ctx.restore();
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(state.compositeCanvas, 0, 0, canvas.width, canvas.height);
     
     updateZoomDisplay();
+}
+
+function queueOverlayRebuildAndRender(isAlignmentDrag = false) {
+    state.needsOverlayRebuild = true;
+    state.isAlignmentPreview = isAlignmentDrag;
+
+    if (state.overlayRebuildFrame !== null) {
+        return;
+    }
+
+    if (isAlignmentDrag) {
+        const now = performance.now();
+        const elapsed = now - state.lastAlignRenderTime;
+        const waitMs = Math.max(0, 33 - elapsed);
+
+        state.overlayRebuildFrame = window.setTimeout(() => {
+            state.overlayRebuildFrame = null;
+            state.lastAlignRenderTime = performance.now();
+            renderComparison();
+        }, waitMs);
+        return;
+    }
+
+    state.overlayRebuildFrame = window.requestAnimationFrame(() => {
+        state.overlayRebuildFrame = null;
+        renderComparison();
+    });
+}
+
+function rebuildCompositeOverlay() {
+    const originalImg = state.originalImage;
+    const revisedImg = state.revisedImage;
+
+    state.needsOverlayRebuild = false;
+
+    const scaleFactor = state.isAlignmentPreview ? 0.35 : 1;
+    const targetWidth = Math.max(1, Math.floor(originalImg.width * scaleFactor));
+    const targetHeight = Math.max(1, Math.floor(originalImg.height * scaleFactor));
+
+    state.tempOriginalCanvas.width = targetWidth;
+    state.tempOriginalCanvas.height = targetHeight;
+    state.tempRevisedCanvas.width = targetWidth;
+    state.tempRevisedCanvas.height = targetHeight;
+    state.compositeCanvas.width = targetWidth;
+    state.compositeCanvas.height = targetHeight;
+
+    const ctxOriginal = state.tempOriginalCtx;
+    const ctxRevised = state.tempRevisedCtx;
+
+    ctxOriginal.clearRect(0, 0, targetWidth, targetHeight);
+    ctxRevised.clearRect(0, 0, targetWidth, targetHeight);
+
+    const origOffsetX = state.originalAlignOffsetX * scaleFactor;
+    const origOffsetY = state.originalAlignOffsetY * scaleFactor;
+    const revOffsetX = state.revisedAlignOffsetX * scaleFactor;
+    const revOffsetY = state.revisedAlignOffsetY * scaleFactor;
+
+    ctxOriginal.drawImage(originalImg, 0, 0, originalImg.width, originalImg.height, origOffsetX, origOffsetY, targetWidth, targetHeight);
+    ctxRevised.drawImage(revisedImg, 0, 0, revisedImg.width, revisedImg.height, revOffsetX, revOffsetY, targetWidth, targetHeight);
+
+    const originalData = ctxOriginal.getImageData(0, 0, targetWidth, targetHeight);
+    const revisedData = ctxRevised.getImageData(0, 0, targetWidth, targetHeight);
+    const outputData = state.compositeCtx.createImageData(targetWidth, targetHeight);
+
+    writeOverlayPixels(
+        originalData.data,
+        revisedData.data,
+        outputData.data,
+        state.showOriginal,
+        state.showRevised
+    );
+
+    state.compositeCtx.putImageData(outputData, 0, 0);
+}
+
+function writeOverlayPixels(originalPixels, revisedPixels, outputPixels, showOriginal, showRevised) {
+    for (let i = 0; i < originalPixels.length; i += 4) {
+        const origR = originalPixels[i];
+        const origG = originalPixels[i + 1];
+        const origB = originalPixels[i + 2];
+        const origA = originalPixels[i + 3];
+
+        const revR = revisedPixels[i];
+        const revG = revisedPixels[i + 1];
+        const revB = revisedPixels[i + 2];
+        const revA = revisedPixels[i + 3];
+
+        const origMarked = origA > 10 && (origR < 250 || origG < 250 || origB < 250);
+        const revMarked = revA > 10 && (revR < 250 || revG < 250 || revB < 250);
+
+        if (origMarked && revMarked) {
+            outputPixels[i] = 0;
+            outputPixels[i + 1] = 0;
+            outputPixels[i + 2] = 0;
+            outputPixels[i + 3] = 255;
+        } else if (origMarked && !revMarked) {
+            if (showOriginal) {
+                outputPixels[i] = 0;
+                outputPixels[i + 1] = 0;
+                outputPixels[i + 2] = 255;
+                outputPixels[i + 3] = 255;
+            } else {
+                outputPixels[i + 3] = 0;
+            }
+        } else if (!origMarked && revMarked) {
+            if (showRevised) {
+                outputPixels[i] = 255;
+                outputPixels[i + 1] = 0;
+                outputPixels[i + 2] = 0;
+                outputPixels[i + 3] = 255;
+            } else {
+                outputPixels[i + 3] = 0;
+            }
+        } else {
+            outputPixels[i + 3] = 0;
+        }
+    }
 }
 
 function updateCanvasPosition() {
@@ -489,78 +845,89 @@ function renderOverlay(
     const revisedData = ctxRevised.getImageData(0, 0, revisedImg.width, revisedImg.height);
     const outputData = context.createImageData(originalImg.width, originalImg.height);
     
-    for (let i = 0; i < originalData.data.length; i += 4) {
-        const origR = originalData.data[i];
-        const origG = originalData.data[i + 1];
-        const origB = originalData.data[i + 2];
-        const origA = originalData.data[i + 3];
-        
-        const revR = revisedData.data[i];
-        const revG = revisedData.data[i + 1];
-        const revB = revisedData.data[i + 2];
-        const revA = revisedData.data[i + 3];
-        
-        const origMarked = origA > 10 && (origR < 250 || origG < 250 || origB < 250);
-        const revMarked = revA > 10 && (revR < 250 || revG < 250 || revB < 250);
-        
-        if (origMarked && revMarked) {
-            outputData.data[i] = 0;
-            outputData.data[i + 1] = 0;
-            outputData.data[i + 2] = 0;
-            outputData.data[i + 3] = 255;
-        } else if (origMarked && !revMarked) {
-            if (showOriginal) {
-                outputData.data[i] = 0;
-                outputData.data[i + 1] = 0;
-                outputData.data[i + 2] = 255;
-                outputData.data[i + 3] = 255;
-            } else {
-                outputData.data[i + 3] = 0;
-            }
-        } else if (!origMarked && revMarked) {
-            if (showRevised) {
-                outputData.data[i] = 255;
-                outputData.data[i + 1] = 0;
-                outputData.data[i + 2] = 0;
-                outputData.data[i + 3] = 255;
-            } else {
-                outputData.data[i + 3] = 0;
-            }
-        } else {
-            outputData.data[i + 3] = 0;
-        }
-    }
+    writeOverlayPixels(
+        originalData.data,
+        revisedData.data,
+        outputData.data,
+        showOriginal,
+        showRevised
+    );
     
     context.putImageData(outputData, 0, 0);
 }
 
 toggleOriginalCheckbox.addEventListener('change', () => {
     state.showOriginal = toggleOriginalCheckbox.checked;
-    renderComparison();
+    queueOverlayRebuildAndRender();
 });
 
 toggleRevisedCheckbox.addEventListener('change', () => {
     state.showRevised = toggleRevisedCheckbox.checked;
-    renderComparison();
+    queueOverlayRebuildAndRender();
 });
 
 resetViewBtn.addEventListener('click', () => {
     state.scale = 1;
     state.offsetX = 0;
     state.offsetY = 0;
-    renderComparison();
+
+    state.originalAlignOffsetX = 0;
+    state.originalAlignOffsetY = 0;
+    state.revisedAlignOffsetX = 0;
+    state.revisedAlignOffsetY = 0;
+
+    if (state.currentDrawing) {
+        delete state.alignmentData[state.currentDrawing];
+        saveAlignmentData();
+    }
+
+    queueOverlayRebuildAndRender();
 });
+
+function zoomAtCursor(clientX, clientY, factor) {
+    if (!state.originalImage) return;
+
+    const containerRect = canvasContainer.getBoundingClientRect();
+    const mouseX = clientX - containerRect.left;
+    const mouseY = clientY - containerRect.top;
+
+    const imgWidth = state.originalImage.width;
+    const imgHeight = state.originalImage.height;
+    const fitScale = Math.min(
+        canvasContainer.clientWidth / imgWidth,
+        canvasContainer.clientHeight / imgHeight
+    ) * 0.9;
+
+    const oldScale = state.scale;
+    const newScale = Math.max(0.1, Math.min(10, oldScale * factor));
+
+    if (newScale === oldScale) {
+        return;
+    }
+
+    const oldDisplayScale = fitScale * oldScale;
+    const oldCanvasLeft = (canvasContainer.clientWidth - imgWidth * oldDisplayScale) / 2 + state.offsetX;
+    const oldCanvasTop = (canvasContainer.clientHeight - imgHeight * oldDisplayScale) / 2 + state.offsetY;
+
+    const imageX = (mouseX - oldCanvasLeft) / oldDisplayScale;
+    const imageY = (mouseY - oldCanvasTop) / oldDisplayScale;
+
+    state.scale = newScale;
+
+    const newDisplayScale = fitScale * newScale;
+    state.offsetX = mouseX - imageX * newDisplayScale - (canvasContainer.clientWidth - imgWidth * newDisplayScale) / 2;
+    state.offsetY = mouseY - imageY * newDisplayScale - (canvasContainer.clientHeight - imgHeight * newDisplayScale) / 2;
+
+    renderComparison();
+}
 
 canvasContainer.addEventListener('wheel', (e) => {
     if (state.isAligning && state.alignDragging) return;
-    
+
     e.preventDefault();
-    
-    const delta = e.deltaY > 0 ? 0.9 : 1.1;
-    state.scale *= delta;
-    state.scale = Math.max(0.1, Math.min(10, state.scale));
-    
-    renderComparison();
+
+    const factor = e.deltaY > 0 ? 0.9 : 1.1;
+    zoomAtCursor(e.clientX, e.clientY, factor);
 });
 
 canvasContainer.addEventListener('mousedown', (e) => {
@@ -585,6 +952,8 @@ canvasContainer.addEventListener('mousedown', (e) => {
                 revisedOffsetY: state.revisedAlignOffsetY
             };
             saveAlignmentData();
+            state.isAlignmentPreview = false;
+            queueOverlayRebuildAndRender();
             exitAlignMode();
         }
     }
@@ -614,7 +983,7 @@ canvasContainer.addEventListener('mousemove', (e) => {
         state.alignDragStartX = currentX;
         state.alignDragStartY = currentY;
         
-        renderComparison();
+        queueOverlayRebuildAndRender(true);
     }
 });
 
@@ -622,6 +991,11 @@ canvasContainer.addEventListener('mouseup', (e) => {
     if (e.button === 2) {
         state.isPanning = false;
         canvasContainer.classList.remove('panning');
+    }
+
+    if (e.button === 0 && state.isAligning && !state.alignDragging) {
+        state.isAlignmentPreview = false;
+        queueOverlayRebuildAndRender();
     }
 });
 
@@ -631,6 +1005,11 @@ canvasContainer.addEventListener('contextmenu', (e) => {
 
 alignButton.addEventListener('click', () => {
     alignInstructions.style.display = 'flex';
+});
+
+toggleFlagBtn.addEventListener('click', () => {
+    if (!state.currentDrawing) return;
+    toggleDrawingFlag(state.currentDrawing);
 });
 
 alignOriginalBtn.addEventListener('click', () => {
@@ -673,6 +1052,7 @@ backToFoldersBtn.addEventListener('click', () => {
 backToListBtn.addEventListener('click', () => {
     comparisonView.style.display = 'none';
     drawingListView.style.display = 'flex';
+    refreshDrawingLists();
 });
 
 window.addEventListener('resize', () => {
