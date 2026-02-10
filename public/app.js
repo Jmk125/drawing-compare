@@ -35,15 +35,17 @@ const state = {
     alignDragStartX: 0,
     alignDragStartY: 0,
     selectedDrawings: new Set(),
-    viewedDrawings: new Set()
+    viewedDrawings: new Set(),
+    flaggedDrawings: new Set(),
+    lastAlignRenderTime: 0
 };
 
 state.compositeCanvas = document.createElement('canvas');
 state.compositeCtx = state.compositeCanvas.getContext('2d');
 state.tempOriginalCanvas = document.createElement('canvas');
-state.tempOriginalCtx = state.tempOriginalCanvas.getContext('2d');
+state.tempOriginalCtx = state.tempOriginalCanvas.getContext('2d', { willReadFrequently: true });
 state.tempRevisedCanvas = document.createElement('canvas');
-state.tempRevisedCtx = state.tempRevisedCanvas.getContext('2d');
+state.tempRevisedCtx = state.tempRevisedCanvas.getContext('2d', { willReadFrequently: true });
 state.needsOverlayRebuild = true;
 state.overlayRebuildFrame = null;
 
@@ -72,6 +74,7 @@ const alignButton = document.getElementById('align-button');
 const alignInstructions = document.getElementById('align-instructions');
 const alignOriginalBtn = document.getElementById('align-original');
 const alignRevisedBtn = document.getElementById('align-revised');
+const toggleFlagBtn = document.getElementById('toggle-flag');
 const cancelAlignBtn = document.getElementById('cancel-align');
 const alignActiveMessage = document.getElementById('align-active-message');
 const selectAllBtn = document.getElementById('select-all');
@@ -116,6 +119,30 @@ function saveAlignmentData() {
     localStorage.setItem('alignments_local', JSON.stringify(state.alignmentData));
 }
 
+function loadFlaggedData() {
+    const saved = localStorage.getItem('flags_local');
+    if (saved) {
+        try {
+            const parsed = JSON.parse(saved);
+            state.flaggedDrawings = new Set(Array.isArray(parsed) ? parsed : []);
+        } catch (e) {
+            state.flaggedDrawings = new Set();
+        }
+    }
+}
+
+function saveFlaggedData() {
+    localStorage.setItem('flags_local', JSON.stringify(Array.from(state.flaggedDrawings)));
+}
+
+function updateFlagButtonState() {
+    if (!state.currentDrawing) return;
+
+    const flagged = state.flaggedDrawings.has(state.currentDrawing);
+    toggleFlagBtn.textContent = flagged ? 'Unflag Significant Change' : 'Flag Significant Change';
+    toggleFlagBtn.classList.toggle('flagged', flagged);
+}
+
 loadFoldersBtn.addEventListener('click', async () => {
     if (state.originalFiles.length === 0 || state.revisedFiles.length === 0) {
         showError('Please select both original and revised folders');
@@ -129,6 +156,7 @@ loadFoldersBtn.addEventListener('click', async () => {
     try {
         categorizeFiles();
         loadAlignmentData();
+        loadFlaggedData();
         showDrawingList();
         
     } catch (error) {
@@ -185,9 +213,7 @@ function showDrawingList() {
     document.getElementById('revised-only-count').textContent = state.revisedOnlyFiles.length;
     document.getElementById('both-count').textContent = state.bothFiles.length;
     
-    populateList('original-only-list', state.originalOnlyFiles, false);
-    populateList('revised-only-list', state.revisedOnlyFiles, false);
-    populateList('both-list', state.bothFiles, true);
+    refreshDrawingLists();
     
     folderSelectionView.style.display = 'none';
     drawingListView.style.display = 'flex';
@@ -203,6 +229,10 @@ function populateList(listId, files, withCheckbox) {
 
         if (state.viewedDrawings.has(filename)) {
             itemEl.classList.add('viewed');
+        }
+
+        if (state.flaggedDrawings.has(filename)) {
+            itemEl.classList.add('flagged');
         }
         
         if (withCheckbox) {
@@ -222,25 +252,70 @@ function populateList(listId, files, withCheckbox) {
             const span = document.createElement('span');
             span.textContent = filename;
             span.addEventListener('click', () => openComparison(filename));
+
+            const flagBtn = document.createElement('button');
+            flagBtn.type = 'button';
+            flagBtn.className = 'flag-toggle';
+            flagBtn.textContent = state.flaggedDrawings.has(filename) ? '★' : '☆';
+            flagBtn.title = 'Toggle significant-change flag';
+            flagBtn.classList.toggle('active', state.flaggedDrawings.has(filename));
+            flagBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                toggleDrawingFlag(filename);
+            });
             
             itemEl.appendChild(checkbox);
             itemEl.appendChild(span);
+            itemEl.appendChild(flagBtn);
         } else {
-            itemEl.textContent = filename;
+            const span = document.createElement('span');
+            span.textContent = filename;
+
+            const flagBtn = document.createElement('button');
+            flagBtn.type = 'button';
+            flagBtn.className = 'flag-toggle';
+            flagBtn.textContent = state.flaggedDrawings.has(filename) ? '★' : '☆';
+            flagBtn.title = 'Toggle significant-change flag';
+            flagBtn.classList.toggle('active', state.flaggedDrawings.has(filename));
+            flagBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                toggleDrawingFlag(filename);
+            });
+
+            itemEl.appendChild(span);
+            itemEl.appendChild(flagBtn);
         }
         
         listEl.appendChild(itemEl);
     });
 }
 
+function refreshDrawingLists() {
+    populateList('original-only-list', state.originalOnlyFiles, false);
+    populateList('revised-only-list', state.revisedOnlyFiles, false);
+    populateList('both-list', state.bothFiles, true);
+}
+
+function toggleDrawingFlag(filename) {
+    if (state.flaggedDrawings.has(filename)) {
+        state.flaggedDrawings.delete(filename);
+    } else {
+        state.flaggedDrawings.add(filename);
+    }
+
+    saveFlaggedData();
+    refreshDrawingLists();
+    updateFlagButtonState();
+}
+
 selectAllBtn.addEventListener('click', () => {
     state.bothFiles.forEach(f => state.selectedDrawings.add(f));
-    populateList('both-list', state.bothFiles, true);
+    refreshDrawingLists();
 });
 
 deselectAllBtn.addEventListener('click', () => {
     state.selectedDrawings.clear();
-    populateList('both-list', state.bothFiles, true);
+    refreshDrawingLists();
 });
 
 exportSelectedBtn.addEventListener('click', async () => {
@@ -385,6 +460,8 @@ async function openComparison(filename) {
         toggleRevisedCheckbox.checked = true;
 
         state.viewedDrawings.add(filename);
+
+        updateFlagButtonState();
         
         currentDrawingName.textContent = filename;
         
@@ -455,15 +532,29 @@ function renderComparison() {
     canvas.style.top = `${(containerHeight - canvas.height) / 2 + state.offsetY}px`;
     
     ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.imageSmoothingEnabled = false;
     ctx.drawImage(state.compositeCanvas, 0, 0, canvas.width, canvas.height);
     
     updateZoomDisplay();
 }
 
-function queueOverlayRebuildAndRender() {
+function queueOverlayRebuildAndRender(isAlignmentDrag = false) {
     state.needsOverlayRebuild = true;
 
     if (state.overlayRebuildFrame !== null) {
+        return;
+    }
+
+    if (isAlignmentDrag) {
+        const now = performance.now();
+        const elapsed = now - state.lastAlignRenderTime;
+        const waitMs = Math.max(0, 50 - elapsed);
+
+        state.overlayRebuildFrame = window.setTimeout(() => {
+            state.overlayRebuildFrame = null;
+            state.lastAlignRenderTime = performance.now();
+            renderComparison();
+        }, waitMs);
         return;
     }
 
@@ -620,16 +711,50 @@ resetViewBtn.addEventListener('click', () => {
     renderComparison();
 });
 
+function zoomAtCursor(clientX, clientY, factor) {
+    if (!state.originalImage) return;
+
+    const containerRect = canvasContainer.getBoundingClientRect();
+    const mouseX = clientX - containerRect.left;
+    const mouseY = clientY - containerRect.top;
+
+    const imgWidth = state.originalImage.width;
+    const imgHeight = state.originalImage.height;
+    const fitScale = Math.min(
+        canvasContainer.clientWidth / imgWidth,
+        canvasContainer.clientHeight / imgHeight
+    ) * 0.9;
+
+    const oldScale = state.scale;
+    const newScale = Math.max(0.1, Math.min(10, oldScale * factor));
+
+    if (newScale === oldScale) {
+        return;
+    }
+
+    const oldDisplayScale = fitScale * oldScale;
+    const oldCanvasLeft = (canvasContainer.clientWidth - imgWidth * oldDisplayScale) / 2 + state.offsetX;
+    const oldCanvasTop = (canvasContainer.clientHeight - imgHeight * oldDisplayScale) / 2 + state.offsetY;
+
+    const imageX = (mouseX - oldCanvasLeft) / oldDisplayScale;
+    const imageY = (mouseY - oldCanvasTop) / oldDisplayScale;
+
+    state.scale = newScale;
+
+    const newDisplayScale = fitScale * newScale;
+    state.offsetX = mouseX - imageX * newDisplayScale - (canvasContainer.clientWidth - imgWidth * newDisplayScale) / 2;
+    state.offsetY = mouseY - imageY * newDisplayScale - (canvasContainer.clientHeight - imgHeight * newDisplayScale) / 2;
+
+    renderComparison();
+}
+
 canvasContainer.addEventListener('wheel', (e) => {
     if (state.isAligning && state.alignDragging) return;
-    
+
     e.preventDefault();
-    
-    const delta = e.deltaY > 0 ? 0.9 : 1.1;
-    state.scale *= delta;
-    state.scale = Math.max(0.1, Math.min(10, state.scale));
-    
-    renderComparison();
+
+    const factor = e.deltaY > 0 ? 0.9 : 1.1;
+    zoomAtCursor(e.clientX, e.clientY, factor);
 });
 
 canvasContainer.addEventListener('mousedown', (e) => {
@@ -683,7 +808,7 @@ canvasContainer.addEventListener('mousemove', (e) => {
         state.alignDragStartX = currentX;
         state.alignDragStartY = currentY;
         
-        queueOverlayRebuildAndRender();
+        queueOverlayRebuildAndRender(true);
     }
 });
 
@@ -700,6 +825,11 @@ canvasContainer.addEventListener('contextmenu', (e) => {
 
 alignButton.addEventListener('click', () => {
     alignInstructions.style.display = 'flex';
+});
+
+toggleFlagBtn.addEventListener('click', () => {
+    if (!state.currentDrawing) return;
+    toggleDrawingFlag(state.currentDrawing);
 });
 
 alignOriginalBtn.addEventListener('click', () => {
@@ -742,7 +872,7 @@ backToFoldersBtn.addEventListener('click', () => {
 backToListBtn.addEventListener('click', () => {
     comparisonView.style.display = 'none';
     drawingListView.style.display = 'flex';
-    populateList('both-list', state.bothFiles, true);
+    refreshDrawingLists();
 });
 
 window.addEventListener('resize', () => {
