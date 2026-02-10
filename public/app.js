@@ -34,7 +34,8 @@ const state = {
     alignDragging: false,
     alignDragStartX: 0,
     alignDragStartY: 0,
-    selectedDrawings: new Set()
+    selectedDrawings: new Set(),
+    viewedDrawings: new Set()
 };
 
 state.compositeCanvas = document.createElement('canvas');
@@ -199,6 +200,10 @@ function populateList(listId, files, withCheckbox) {
     files.forEach(filename => {
         const itemEl = document.createElement('div');
         itemEl.className = 'drawing-item';
+
+        if (state.viewedDrawings.has(filename)) {
+            itemEl.classList.add('viewed');
+        }
         
         if (withCheckbox) {
             itemEl.classList.add('with-checkbox');
@@ -378,6 +383,8 @@ async function openComparison(filename) {
         state.needsOverlayRebuild = true;
         toggleOriginalCheckbox.checked = true;
         toggleRevisedCheckbox.checked = true;
+
+        state.viewedDrawings.add(filename);
         
         currentDrawingName.textContent = filename;
         
@@ -735,6 +742,7 @@ backToFoldersBtn.addEventListener('click', () => {
 backToListBtn.addEventListener('click', () => {
     comparisonView.style.display = 'none';
     drawingListView.style.display = 'flex';
+    populateList('both-list', state.bothFiles, true);
 });
 
 window.addEventListener('resize', () => {
