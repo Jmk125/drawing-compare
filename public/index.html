@@ -23,7 +23,11 @@
                     <input type="file" id="revised-folder" webkitdirectory directory multiple />
                     <p class="file-count" id="revised-count">No files selected</p>
                 </div>
-                <button id="load-folders" class="btn-primary">Load Drawings</button>
+                <div class="folder-actions">
+                    <button id="load-folders" class="btn-primary">Load Drawings</button>
+                    <button id="load-session" class="btn-secondary">Load Previous Session</button>
+                    <input type="file" id="load-session-file" accept="application/json" style="display: none;" />
+                </div>
             </div>
             <div id="loading-message" style="display: none;">
                 <p>Loading drawings...</p>
@@ -40,6 +44,7 @@
                     <select id="letter-filter">
                         <option value="ALL">All</option>
                     </select>
+                    <button id="save-session" class="btn-small">Save Session</button>
                     <button id="back-to-folders" class="btn-secondary">Change Folders</button>
                 </div>
             </div>

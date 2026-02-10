@@ -8,9 +8,13 @@ const { exec } = require('child_process');
 const util = require('util');
 const execPromise = util.promisify(exec);
 const multer = require('multer');
+const crypto = require('crypto');
 
 const app = express();
 const PORT = 3500;
+const PDF_CONVERSION_DPI = Number(process.env.PDF_CONVERSION_DPI || 120);
+const MAX_CONVERSION_CACHE_ITEMS = Number(process.env.MAX_CONVERSION_CACHE_ITEMS || 120);
+const conversionCache = new Map();
 
 // Configure multer for file uploads
 const upload = multer({ 
@@ -27,34 +31,76 @@ app.get('/', (req, res) => {
     res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
+
+function addToConversionCache(cacheKey, base64Image) {
+    if (conversionCache.has(cacheKey)) {
+        conversionCache.delete(cacheKey);
+    }
+
+    conversionCache.set(cacheKey, base64Image);
+
+    if (conversionCache.size > MAX_CONVERSION_CACHE_ITEMS) {
+        const oldestKey = conversionCache.keys().next().value;
+        conversionCache.delete(oldestKey);
+    }
+}
+
+async function sha1OfFile(filePath) {
+    const hash = crypto.createHash('sha1');
+    const buffer = await fs.readFile(filePath);
+    hash.update(buffer);
+    return hash.digest('hex');
+}
+
 // Convert PDF to PNG
 app.post('/api/convert-pdf', upload.single('pdf'), async (req, res) => {
+    const pdfPath = req.file?.path;
+
+    if (!pdfPath) {
+        return res.status(400).json({ success: false, error: 'No PDF uploaded' });
+    }
+
+    const outputPath = path.join('/tmp', `${req.file.filename}.png`);
+
     try {
-        const pdfPath = req.file.path;
-        const outputPath = path.join('/tmp', `${req.file.filename}.png`);
-        
-        // Use pdftoppm (from poppler-utils) to convert PDF to PNG
-        // -png = output as PNG, -singlefile = single page, -r 150 = 150 DPI
-        await execPromise(`pdftoppm -png -singlefile -r 150 "${pdfPath}" "${outputPath.replace('.png', '')}"`);
-        
-        // Read the converted image
+        const fileHash = await sha1OfFile(pdfPath);
+        const cacheKey = `${fileHash}:${PDF_CONVERSION_DPI}`;
+
+        if (conversionCache.has(cacheKey)) {
+            await fs.unlink(pdfPath).catch(() => {});
+            return res.json({
+                success: true,
+                image: conversionCache.get(cacheKey),
+                cached: true,
+                dpi: PDF_CONVERSION_DPI
+            });
+        }
+
+        await execPromise(`pdftoppm -f 1 -singlefile -png -r ${PDF_CONVERSION_DPI} "${pdfPath}" "${outputPath.replace('.png', '')}"`);
+
         const imageBuffer = await fs.readFile(outputPath);
-        
-        // Clean up temp files
-        await fs.unlink(pdfPath);
-        await fs.unlink(outputPath);
-        
-        // Send back as base64
-        res.json({ 
-            success: true, 
-            image: imageBuffer.toString('base64')
+        const imageBase64 = imageBuffer.toString('base64');
+
+        addToConversionCache(cacheKey, imageBase64);
+
+        await fs.unlink(pdfPath).catch(() => {});
+        await fs.unlink(outputPath).catch(() => {});
+
+        res.json({
+            success: true,
+            image: imageBase64,
+            cached: false,
+            dpi: PDF_CONVERSION_DPI
         });
-        
+
     } catch (error) {
+        await fs.unlink(pdfPath).catch(() => {});
+        await fs.unlink(outputPath).catch(() => {});
+
         console.error('Conversion error:', error);
-        res.status(500).json({ 
-            success: false, 
-            error: error.message 
+        res.status(500).json({
+            success: false,
+            error: error.message
         });
     }
 });

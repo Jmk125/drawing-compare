@@ -76,6 +76,13 @@ body {
     font-style: italic;
 }
 
+.folder-actions {
+    display: flex;
+    gap: 12px;
+    margin-top: 10px;
+    align-items: center;
+}
+
 .btn-primary {
     background: #3498db;
     color: white;

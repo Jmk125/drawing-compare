@@ -39,7 +39,8 @@ const state = {
     flaggedDrawings: new Set(),
     lastAlignRenderTime: 0,
     currentLetterFilter: 'ALL',
-    isAlignmentPreview: false
+    isAlignmentPreview: false,
+    pendingSessionData: null
 };
 
 state.compositeCanvas = document.createElement('canvas');
@@ -60,6 +61,9 @@ const revisedFolderInput = document.getElementById('revised-folder');
 const originalCountEl = document.getElementById('original-count');
 const revisedCountEl = document.getElementById('revised-count');
 const loadFoldersBtn = document.getElementById('load-folders');
+const loadSessionBtn = document.getElementById('load-session');
+const loadSessionFileInput = document.getElementById('load-session-file');
+const saveSessionBtn = document.getElementById('save-session');
 const loadingMessage = document.getElementById('loading-message');
 const errorMessage = document.getElementById('error-message');
 const backToFoldersBtn = document.getElementById('back-to-folders');
@@ -107,6 +111,38 @@ revisedFolderInput.addEventListener('change', (e) => {
     revisedCountEl.textContent = `${files.length} PDF files selected`;
 });
 
+
+loadSessionBtn.addEventListener('click', () => {
+    loadSessionFileInput.click();
+});
+
+loadSessionFileInput.addEventListener('change', async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    try {
+        const text = await file.text();
+        const sessionData = JSON.parse(text);
+        state.pendingSessionData = sessionData;
+
+        if (state.originalFiles.length > 0 && state.revisedFiles.length > 0) {
+            applySessionData(sessionData);
+            state.pendingSessionData = null;
+            showDrawingList();
+        } else {
+            alert('Session file loaded. Now select both folders and click Load Drawings to apply it.');
+        }
+    } catch (error) {
+        alert('Failed to load session file: ' + error.message);
+    } finally {
+        loadSessionFileInput.value = '';
+    }
+});
+
+saveSessionBtn.addEventListener('click', () => {
+    downloadSessionFile();
+});
+
 function loadAlignmentData() {
     const saved = localStorage.getItem('alignments_local');
     if (saved) {
@@ -146,6 +182,73 @@ function updateFlagButtonState() {
     toggleFlagBtn.classList.toggle('flagged', flagged);
 }
 
+
+function buildSessionData() {
+    return {
+        version: 1,
+        savedAt: new Date().toISOString(),
+        originalFiles: state.originalFiles.map(f => f.name).sort(),
+        revisedFiles: state.revisedFiles.map(f => f.name).sort(),
+        selectedDrawings: Array.from(state.selectedDrawings),
+        viewedDrawings: Array.from(state.viewedDrawings),
+        flaggedDrawings: Array.from(state.flaggedDrawings),
+        alignmentData: state.alignmentData,
+        letterFilter: state.currentLetterFilter
+    };
+}
+
+function downloadSessionFile() {
+    const sessionData = buildSessionData();
+    const blob = new Blob([JSON.stringify(sessionData, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    a.href = url;
+    a.download = `drawing-session-${timestamp}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+}
+
+function applySessionData(sessionData) {
+    if (!sessionData || typeof sessionData !== 'object') {
+        throw new Error('Invalid session file format');
+    }
+
+    const originalSet = new Set(state.originalFiles.map(f => f.name));
+    const revisedSet = new Set(state.revisedFiles.map(f => f.name));
+
+    const selected = Array.isArray(sessionData.selectedDrawings) ? sessionData.selectedDrawings : [];
+    const viewed = Array.isArray(sessionData.viewedDrawings) ? sessionData.viewedDrawings : [];
+    const flagged = Array.isArray(sessionData.flaggedDrawings) ? sessionData.flaggedDrawings : [];
+
+    state.selectedDrawings = new Set(selected.filter(name => originalSet.has(name) && revisedSet.has(name)));
+    state.viewedDrawings = new Set(viewed.filter(name => originalSet.has(name) && revisedSet.has(name)));
+    state.flaggedDrawings = new Set(flagged.filter(name => originalSet.has(name) && revisedSet.has(name)));
+
+    const alignmentData = sessionData.alignmentData && typeof sessionData.alignmentData === 'object'
+        ? sessionData.alignmentData
+        : {};
+
+    state.alignmentData = {};
+    Object.entries(alignmentData).forEach(([name, value]) => {
+        if (!originalSet.has(name) || !revisedSet.has(name)) return;
+        if (!value || typeof value !== 'object') return;
+
+        state.alignmentData[name] = {
+            originalOffsetX: Number(value.originalOffsetX) || 0,
+            originalOffsetY: Number(value.originalOffsetY) || 0,
+            revisedOffsetX: Number(value.revisedOffsetX) || 0,
+            revisedOffsetY: Number(value.revisedOffsetY) || 0
+        };
+    });
+
+    const requestedFilter = sessionData.letterFilter;
+    state.currentLetterFilter = typeof requestedFilter === 'string' ? requestedFilter.toUpperCase() : 'ALL';
+
+    saveAlignmentData();
+    saveFlaggedData();
+}
+
 loadFoldersBtn.addEventListener('click', async () => {
     if (state.originalFiles.length === 0 || state.revisedFiles.length === 0) {
         showError('Please select both original and revised folders');
@@ -160,6 +263,12 @@ loadFoldersBtn.addEventListener('click', async () => {
         categorizeFiles();
         loadAlignmentData();
         loadFlaggedData();
+
+        if (state.pendingSessionData) {
+            applySessionData(state.pendingSessionData);
+            state.pendingSessionData = null;
+        }
+
         showDrawingList();
         
     } catch (error) {
@@ -592,7 +701,7 @@ function queueOverlayRebuildAndRender(isAlignmentDrag = false) {
     if (isAlignmentDrag) {
         const now = performance.now();
         const elapsed = now - state.lastAlignRenderTime;
-        const waitMs = Math.max(0, 90 - elapsed);
+        const waitMs = Math.max(0, 33 - elapsed);
 
         state.overlayRebuildFrame = window.setTimeout(() => {
             state.overlayRebuildFrame = null;
@@ -614,7 +723,7 @@ function rebuildCompositeOverlay() {
 
     state.needsOverlayRebuild = false;
 
-    const scaleFactor = state.isAlignmentPreview ? 0.5 : 1;
+    const scaleFactor = state.isAlignmentPreview ? 0.35 : 1;
     const targetWidth = Math.max(1, Math.floor(originalImg.width * scaleFactor));
     const targetHeight = Math.max(1, Math.floor(originalImg.height * scaleFactor));
 
