@@ -35,7 +35,13 @@
         <div id="drawing-list" class="view" style="display: none;">
             <div class="header">
                 <h1>Drawing Comparison</h1>
-                <button id="back-to-folders" class="btn-secondary">Change Folders</button>
+                <div class="list-header-controls">
+                    <label for="letter-filter">Starts with:</label>
+                    <select id="letter-filter">
+                        <option value="ALL">All</option>
+                    </select>
+                    <button id="back-to-folders" class="btn-secondary">Change Folders</button>
+                </div>
             </div>
             
             <div class="list-container">
@@ -67,6 +73,7 @@
                 <h2 id="current-drawing-name"></h2>
                 <div class="controls">
                     <button id="align-button" class="btn-primary">Align Drawings</button>
+                    <button id="toggle-flag" class="btn-small">Flag Significant Change</button>
                     <label><input type="checkbox" id="toggle-original" checked> Show Original (Blue)</label>
                     <label><input type="checkbox" id="toggle-revised" checked> Show Revised (Red)</label>
                     <button id="reset-view" class="btn-secondary">Reset View</button>
