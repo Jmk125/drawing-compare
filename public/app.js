@@ -37,6 +37,7 @@ const state = {
     selectedDrawings: new Set(),
     viewedDrawings: new Set(),
     flaggedDrawings: new Set(),
+    drawingNotes: {},
     lastAlignRenderTime: 0,
     currentLetterFilter: 'ALL',
     isAlignmentPreview: false,
@@ -87,6 +88,16 @@ const alignActiveMessage = document.getElementById('align-active-message');
 const selectAllBtn = document.getElementById('select-all');
 const deselectAllBtn = document.getElementById('deselect-all');
 const exportSelectedBtn = document.getElementById('export-selected');
+const editNoteBtn = document.getElementById('edit-note');
+const notePanel = document.getElementById('note-panel');
+const closeNotePanelBtn = document.getElementById('close-note-panel');
+const noteTextarea = document.getElementById('note-textarea');
+const saveNoteBtn = document.getElementById('save-note');
+const seeAllNotesBtn = document.getElementById('see-all-notes');
+const notesModal = document.getElementById('notes-modal');
+const closeNotesModalBtn = document.getElementById('close-notes-modal');
+const notesModalBody = document.getElementById('notes-modal-body');
+const exportNotesBtn = document.getElementById('export-notes');
 
 state.canvas = canvas;
 state.ctx = ctx;
@@ -174,6 +185,34 @@ function saveFlaggedData() {
     localStorage.setItem('flags_local', JSON.stringify(Array.from(state.flaggedDrawings)));
 }
 
+function loadNotesData() {
+    const saved = localStorage.getItem('notes_local');
+    if (saved) {
+        try {
+            const parsed = JSON.parse(saved);
+            state.drawingNotes = parsed && typeof parsed === 'object' ? parsed : {};
+        } catch (e) {
+            state.drawingNotes = {};
+        }
+    }
+}
+
+function saveNotesData() {
+    localStorage.setItem('notes_local', JSON.stringify(state.drawingNotes));
+}
+
+function getNote(filename) {
+    return (state.drawingNotes[filename] || '').trim();
+}
+
+function updateNoteButtonState() {
+    if (!state.currentDrawing) return;
+
+    const hasNote = Boolean(getNote(state.currentDrawing));
+    editNoteBtn.textContent = hasNote ? 'Edit Note' : 'Add Note';
+    editNoteBtn.classList.toggle('has-note', hasNote);
+}
+
 function updateFlagButtonState() {
     if (!state.currentDrawing) return;
 
@@ -192,6 +231,7 @@ function buildSessionData() {
         selectedDrawings: Array.from(state.selectedDrawings),
         viewedDrawings: Array.from(state.viewedDrawings),
         flaggedDrawings: Array.from(state.flaggedDrawings),
+        drawingNotes: state.drawingNotes,
         alignmentData: state.alignmentData,
         letterFilter: state.currentLetterFilter
     };
@@ -220,10 +260,23 @@ function applySessionData(sessionData) {
     const selected = Array.isArray(sessionData.selectedDrawings) ? sessionData.selectedDrawings : [];
     const viewed = Array.isArray(sessionData.viewedDrawings) ? sessionData.viewedDrawings : [];
     const flagged = Array.isArray(sessionData.flaggedDrawings) ? sessionData.flaggedDrawings : [];
+    const sessionNotes = sessionData.drawingNotes && typeof sessionData.drawingNotes === 'object'
+        ? sessionData.drawingNotes
+        : {};
 
     state.selectedDrawings = new Set(selected.filter(name => originalSet.has(name) && revisedSet.has(name)));
     state.viewedDrawings = new Set(viewed.filter(name => originalSet.has(name) && revisedSet.has(name)));
     state.flaggedDrawings = new Set(flagged.filter(name => originalSet.has(name) && revisedSet.has(name)));
+
+    state.drawingNotes = {};
+    Object.entries(sessionNotes).forEach(([name, value]) => {
+        if (!originalSet.has(name) || !revisedSet.has(name)) return;
+        if (typeof value !== 'string') return;
+        const trimmed = value.trim();
+        if (trimmed) {
+            state.drawingNotes[name] = trimmed;
+        }
+    });
 
     const alignmentData = sessionData.alignmentData && typeof sessionData.alignmentData === 'object'
         ? sessionData.alignmentData
@@ -247,6 +300,7 @@ function applySessionData(sessionData) {
 
     saveAlignmentData();
     saveFlaggedData();
+    saveNotesData();
 }
 
 loadFoldersBtn.addEventListener('click', async () => {
@@ -263,6 +317,7 @@ loadFoldersBtn.addEventListener('click', async () => {
         categorizeFiles();
         loadAlignmentData();
         loadFlaggedData();
+        loadNotesData();
 
         if (state.pendingSessionData) {
             applySessionData(state.pendingSessionData);
@@ -336,7 +391,7 @@ function showDrawingList() {
 function populateList(listId, files, withCheckbox) {
     const listEl = document.getElementById(listId);
     listEl.innerHTML = '';
-    
+
     files.forEach(filename => {
         const itemEl = document.createElement('div');
         itemEl.className = 'drawing-item';
@@ -348,10 +403,10 @@ function populateList(listId, files, withCheckbox) {
         if (state.flaggedDrawings.has(filename)) {
             itemEl.classList.add('flagged');
         }
-        
+
         if (withCheckbox) {
             itemEl.classList.add('with-checkbox');
-            
+
             const checkbox = document.createElement('input');
             checkbox.type = 'checkbox';
             checkbox.checked = state.selectedDrawings.has(filename);
@@ -362,44 +417,38 @@ function populateList(listId, files, withCheckbox) {
                     state.selectedDrawings.delete(filename);
                 }
             });
-            
-            const span = document.createElement('span');
-            span.textContent = filename;
-            span.addEventListener('click', () => openComparison(filename));
-
-            const flagBtn = document.createElement('button');
-            flagBtn.type = 'button';
-            flagBtn.className = 'flag-toggle';
-            flagBtn.textContent = state.flaggedDrawings.has(filename) ? '★' : '☆';
-            flagBtn.title = 'Toggle significant-change flag';
-            flagBtn.classList.toggle('active', state.flaggedDrawings.has(filename));
-            flagBtn.addEventListener('click', (e) => {
-                e.stopPropagation();
-                toggleDrawingFlag(filename);
-            });
-            
             itemEl.appendChild(checkbox);
-            itemEl.appendChild(span);
-            itemEl.appendChild(flagBtn);
-        } else {
-            const span = document.createElement('span');
-            span.textContent = filename;
-
-            const flagBtn = document.createElement('button');
-            flagBtn.type = 'button';
-            flagBtn.className = 'flag-toggle';
-            flagBtn.textContent = state.flaggedDrawings.has(filename) ? '★' : '☆';
-            flagBtn.title = 'Toggle significant-change flag';
-            flagBtn.classList.toggle('active', state.flaggedDrawings.has(filename));
-            flagBtn.addEventListener('click', (e) => {
-                e.stopPropagation();
-                toggleDrawingFlag(filename);
-            });
-
-            itemEl.appendChild(span);
-            itemEl.appendChild(flagBtn);
         }
-        
+
+        const span = document.createElement('span');
+        span.textContent = filename;
+        span.addEventListener('click', () => openComparison(filename));
+
+        const noteBtn = document.createElement('button');
+        noteBtn.type = 'button';
+        noteBtn.className = 'note-toggle';
+        noteBtn.textContent = getNote(filename) ? '📝' : '🗒';
+        noteBtn.title = getNote(filename) ? 'View note' : 'Add note';
+        noteBtn.classList.toggle('active', Boolean(getNote(filename)));
+        noteBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            openComparison(filename).then(() => openNotePanel());
+        });
+
+        const flagBtn = document.createElement('button');
+        flagBtn.type = 'button';
+        flagBtn.className = 'flag-toggle';
+        flagBtn.textContent = state.flaggedDrawings.has(filename) ? '★' : '☆';
+        flagBtn.title = 'Toggle significant-change flag';
+        flagBtn.classList.toggle('active', state.flaggedDrawings.has(filename));
+        flagBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            toggleDrawingFlag(filename);
+        });
+
+        itemEl.appendChild(span);
+        itemEl.appendChild(noteBtn);
+        itemEl.appendChild(flagBtn);
         listEl.appendChild(itemEl);
     });
 }
@@ -614,6 +663,7 @@ async function openComparison(filename) {
         state.viewedDrawings.add(filename);
 
         updateFlagButtonState();
+        updateNoteButtonState();
         
         currentDrawingName.textContent = filename;
         
@@ -684,7 +734,8 @@ function renderComparison() {
     canvas.style.top = `${(containerHeight - canvas.height) / 2 + state.offsetY}px`;
     
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.imageSmoothingEnabled = false;
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
     ctx.drawImage(state.compositeCanvas, 0, 0, canvas.width, canvas.height);
     
     updateZoomDisplay();
@@ -856,6 +907,84 @@ function renderOverlay(
     context.putImageData(outputData, 0, 0);
 }
 
+function openNotePanel() {
+    if (!state.currentDrawing) return;
+    noteTextarea.value = state.drawingNotes[state.currentDrawing] || '';
+    notePanel.style.display = 'flex';
+    noteTextarea.focus();
+}
+
+function closeNotePanel() {
+    notePanel.style.display = 'none';
+}
+
+function saveCurrentNote() {
+    if (!state.currentDrawing) return;
+    const text = noteTextarea.value.trim();
+
+    if (text) {
+        state.drawingNotes[state.currentDrawing] = text;
+    } else {
+        delete state.drawingNotes[state.currentDrawing];
+    }
+
+    saveNotesData();
+    updateNoteButtonState();
+    refreshDrawingLists();
+}
+
+function escapeHtml(value) {
+    return value
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#39;');
+}
+
+function openNotesModal() {
+    const entries = Object.entries(state.drawingNotes)
+        .filter(([, note]) => typeof note === 'string' && note.trim())
+        .sort(([a], [b]) => a.localeCompare(b));
+
+    if (entries.length === 0) {
+        notesModalBody.innerHTML = '<p>No notes yet.</p>';
+    } else {
+        notesModalBody.innerHTML = entries
+            .map(([name, note]) => `<div class="note-row"><div class="note-row-title">${escapeHtml(name)}</div><div class="note-row-body">${escapeHtml(note).replaceAll('\n', '<br>')}</div></div>`)
+            .join('');
+    }
+
+    notesModal.style.display = 'flex';
+}
+
+function closeNotesModal() {
+    notesModal.style.display = 'none';
+}
+
+function exportNotesToExcelCsv() {
+    const rows = [['Drawing', 'Note']];
+    const entries = Object.entries(state.drawingNotes)
+        .filter(([, note]) => typeof note === 'string' && note.trim())
+        .sort(([a], [b]) => a.localeCompare(b));
+
+    entries.forEach(([name, note]) => {
+        rows.push([name, note.trim()]);
+    });
+
+    const csv = rows
+        .map((row) => row.map((cell) => `"${String(cell).replaceAll('"', '""')}"`).join(','))
+        .join('\n');
+
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'drawing-notes.csv';
+    a.click();
+    URL.revokeObjectURL(url);
+}
+
 toggleOriginalCheckbox.addEventListener('change', () => {
     state.showOriginal = toggleOriginalCheckbox.checked;
     queueOverlayRebuildAndRender();
@@ -1012,6 +1141,30 @@ toggleFlagBtn.addEventListener('click', () => {
     toggleDrawingFlag(state.currentDrawing);
 });
 
+editNoteBtn.addEventListener('click', () => {
+    openNotePanel();
+});
+
+closeNotePanelBtn.addEventListener('click', () => {
+    closeNotePanel();
+});
+
+saveNoteBtn.addEventListener('click', () => {
+    saveCurrentNote();
+});
+
+seeAllNotesBtn.addEventListener('click', () => {
+    openNotesModal();
+});
+
+closeNotesModalBtn.addEventListener('click', () => {
+    closeNotesModal();
+});
+
+exportNotesBtn.addEventListener('click', () => {
+    exportNotesToExcelCsv();
+});
+
 alignOriginalBtn.addEventListener('click', () => {
     enterAlignMode('original');
 });
@@ -1050,6 +1203,7 @@ backToFoldersBtn.addEventListener('click', () => {
 });
 
 backToListBtn.addEventListener('click', () => {
+    closeNotePanel();
     comparisonView.style.display = 'none';
     drawingListView.style.display = 'flex';
     refreshDrawingLists();
