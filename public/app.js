@@ -451,6 +451,16 @@ function applySessionData(sessionData) {
         }
     });
 
+    state.drawingNotes = {};
+    Object.entries(sessionNotes).forEach(([name, value]) => {
+        if (!originalSet.has(name) || !revisedSet.has(name)) return;
+        if (typeof value !== 'string') return;
+        const trimmed = value.trim();
+        if (trimmed) {
+            state.drawingNotes[name] = trimmed;
+        }
+    });
+
     const alignmentData = sessionData.alignmentData && typeof sessionData.alignmentData === 'object'
         ? sessionData.alignmentData
         : {};
