@@ -1016,16 +1016,46 @@ function renderComparison() {
     const container = canvasContainer;
     const containerWidth = container.clientWidth;
     const containerHeight = container.clientHeight;
-    
+
     const imgWidth = state.originalImage.width;
     const imgHeight = state.originalImage.height;
-    
+
     const scaleX = containerWidth / imgWidth;
     const scaleY = containerHeight / imgHeight;
     const fitScale = Math.min(scaleX, scaleY) * 0.9;
-    
+
     const displayScale = fitScale * state.scale;
-    
+
+    if (state.isAlignmentPreview) {
+        // During alignment drag, keep the canvas buffer at native resolution
+        // and use CSS sizing for zoom. This avoids creating a huge pixel
+        // buffer when zoomed in — CSS scaling is GPU-composited and free.
+        const nativeW = state.compositeCanvas.width;
+        const nativeH = state.compositeCanvas.height;
+        if (canvas.width !== nativeW || canvas.height !== nativeH) {
+            canvas.width = nativeW;
+            canvas.height = nativeH;
+        }
+
+        const cssW = nativeW * displayScale;
+        const cssH = nativeH * displayScale;
+        canvas.style.width = cssW + 'px';
+        canvas.style.height = cssH + 'px';
+        canvas.style.left = `${(containerWidth - cssW) / 2 + state.offsetX}px`;
+        canvas.style.top = `${(containerHeight - cssH) / 2 + state.offsetY}px`;
+
+        ctx.clearRect(0, 0, nativeW, nativeH);
+        ctx.drawImage(state.compositeCanvas, 0, 0);
+
+        updateZoomDisplay();
+        return;
+    }
+
+    // Normal rendering: canvas buffer at full display resolution.
+    // Clear CSS size overrides from alignment mode.
+    canvas.style.width = '';
+    canvas.style.height = '';
+
     const newWidth = Math.round(imgWidth * displayScale);
     const newHeight = Math.round(imgHeight * displayScale);
     if (canvas.width !== newWidth || canvas.height !== newHeight) {
@@ -1040,7 +1070,7 @@ function renderComparison() {
     ctx.imageSmoothingEnabled = true;
     ctx.imageSmoothingQuality = 'high';
     ctx.drawImage(state.compositeCanvas, 0, 0, canvas.width, canvas.height);
-    
+
     updateZoomDisplay();
 }
 
