@@ -123,7 +123,16 @@
             <div class="modal-content">
                 <div class="modal-header">
                     <h3 id="notes-modal-title">All Drawing Notes</h3>
-                    <button id="close-notes-modal" class="btn-small">Close</button>
+                    <div class="notes-header-actions">
+                        <label id="notes-filter-group" for="notes-filter-select">Set:</label>
+                        <select id="notes-filter-select">
+                            <option value="BOTH">Both Sets</option>
+                            <option value="ORIGINAL_ONLY">Original Only</option>
+                            <option value="REVISED_ONLY">Revised Only</option>
+                            <option value="ALL">All</option>
+                        </select>
+                        <button id="close-notes-modal" class="btn-small">Close</button>
+                    </div>
                 </div>
                 <div id="notes-modal-body" class="notes-modal-body"></div>
                 <div class="modal-actions">

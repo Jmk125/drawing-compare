@@ -486,3 +486,22 @@ body {
     white-space: pre-wrap;
     line-height: 1.4;
 }
+
+
+.notes-header-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+#notes-filter-group {
+    font-size: 13px;
+    color: #607d8b;
+}
+
+#notes-filter-select {
+    padding: 6px 8px;
+    border: 1px solid #cfd8dc;
+    border-radius: 4px;
+    background: #fff;
+}

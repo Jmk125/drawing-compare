@@ -43,7 +43,9 @@ const state = {
     isAlignmentPreview: false,
     pendingSessionData: null,
     originalFolderName: '',
-    revisedFolderName: ''
+    revisedFolderName: '',
+    drawingCategoryMap: {},
+    notesFilter: 'BOTH'
 };
 
 state.compositeCanvas = document.createElement('canvas');
@@ -100,6 +102,8 @@ const notesModal = document.getElementById('notes-modal');
 const closeNotesModalBtn = document.getElementById('close-notes-modal');
 const notesModalBody = document.getElementById('notes-modal-body');
 const notesModalTitle = document.getElementById('notes-modal-title');
+const notesFilterGroup = document.getElementById('notes-filter-group');
+const notesFilterSelect = document.getElementById('notes-filter-select');
 const exportNotesBtn = document.getElementById('export-notes');
 
 state.canvas = canvas;
@@ -424,6 +428,7 @@ function applySessionData(sessionData) {
 
     const originalSet = new Set(state.originalFiles.map(f => f.name));
     const revisedSet = new Set(state.revisedFiles.map(f => f.name));
+    const availableSet = new Set([...originalSet, ...revisedSet]);
 
     const selected = Array.isArray(sessionData.selectedDrawings) ? sessionData.selectedDrawings : [];
     const viewed = Array.isArray(sessionData.viewedDrawings) ? sessionData.viewedDrawings : [];
@@ -433,8 +438,18 @@ function applySessionData(sessionData) {
         : {};
 
     state.selectedDrawings = new Set(selected.filter(name => originalSet.has(name) && revisedSet.has(name)));
-    state.viewedDrawings = new Set(viewed.filter(name => originalSet.has(name) && revisedSet.has(name)));
-    state.flaggedDrawings = new Set(flagged.filter(name => originalSet.has(name) && revisedSet.has(name)));
+    state.viewedDrawings = new Set(viewed.filter(name => availableSet.has(name)));
+    state.flaggedDrawings = new Set(flagged.filter(name => availableSet.has(name)));
+
+    state.drawingNotes = {};
+    Object.entries(sessionNotes).forEach(([name, value]) => {
+        if (!availableSet.has(name)) return;
+        if (typeof value !== 'string') return;
+        const trimmed = value.trim();
+        if (trimmed) {
+            state.drawingNotes[name] = trimmed;
+        }
+    });
 
     state.drawingNotes = {};
     Object.entries(sessionNotes).forEach(([name, value]) => {
@@ -543,10 +558,21 @@ function categorizeFiles() {
     const revisedNames = state.revisedFiles.map(f => f.name);
     const originalSet = new Set(originalNames);
     const revisedSet = new Set(revisedNames);
-    
+
     state.originalOnlyFiles = originalNames.filter(f => !revisedSet.has(f));
     state.revisedOnlyFiles = revisedNames.filter(f => !originalSet.has(f));
     state.bothFiles = originalNames.filter(f => revisedSet.has(f));
+
+    state.drawingCategoryMap = {};
+    state.originalOnlyFiles.forEach((name) => {
+        state.drawingCategoryMap[name] = 'ORIGINAL_ONLY';
+    });
+    state.revisedOnlyFiles.forEach((name) => {
+        state.drawingCategoryMap[name] = 'REVISED_ONLY';
+    });
+    state.bothFiles.forEach((name) => {
+        state.drawingCategoryMap[name] = 'BOTH';
+    });
 }
 
 function showDrawingList() {
@@ -779,40 +805,63 @@ async function renderOverlayToImage(filename) {
     };
 }
 
+async function createBlankImage(width, height) {
+    const tempCanvas = document.createElement('canvas');
+    tempCanvas.width = width;
+    tempCanvas.height = height;
+    const img = new Image();
+    img.src = tempCanvas.toDataURL('image/png');
+    await new Promise((resolve, reject) => {
+        img.onload = resolve;
+        img.onerror = reject;
+    });
+    return img;
+}
+
 async function openComparison(filename) {
     state.currentDrawing = filename;
     currentDrawingName.textContent = filename + ' - Loading...';
-    
+
     drawingListView.style.display = 'none';
     comparisonView.style.display = 'flex';
-    
-    // Show loading state
+
     ctx.fillStyle = '#ecf0f1';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     ctx.fillStyle = '#2c3e50';
     ctx.font = '20px Arial';
     ctx.textAlign = 'center';
     ctx.fillText('Converting PDF to image...', canvas.width / 2, canvas.height / 2);
-    
+
     try {
-        // Check if already converted
-        if (!state.originalImageMap[filename]) {
+        const hasOriginal = Boolean(state.originalFileMap[filename]);
+        const hasRevised = Boolean(state.revisedFileMap[filename]);
+
+        if (hasOriginal && !state.originalImageMap[filename]) {
             state.originalImageMap[filename] = await convertPDFToImage(state.originalFileMap[filename]);
         }
-        
-        if (!state.revisedImageMap[filename]) {
+
+        if (hasRevised && !state.revisedImageMap[filename]) {
             state.revisedImageMap[filename] = await convertPDFToImage(state.revisedFileMap[filename]);
         }
-        
-        state.originalImage = state.originalImageMap[filename];
-        state.revisedImage = state.revisedImageMap[filename];
-        
-        if (!state.originalImage || !state.revisedImage) {
-            alert('Images not loaded');
-            return;
+
+        const realOriginal = hasOriginal ? state.originalImageMap[filename] : null;
+        const realRevised = hasRevised ? state.revisedImageMap[filename] : null;
+
+        if (!realOriginal && !realRevised) {
+            throw new Error('Drawing not found in either set.');
         }
-        
-        // Load alignment data for this drawing
+
+        if (!realOriginal && realRevised) {
+            state.originalImage = await createBlankImage(realRevised.width, realRevised.height);
+            state.revisedImage = realRevised;
+        } else if (realOriginal && !realRevised) {
+            state.originalImage = realOriginal;
+            state.revisedImage = await createBlankImage(realOriginal.width, realOriginal.height);
+        } else {
+            state.originalImage = realOriginal;
+            state.revisedImage = realRevised;
+        }
+
         const alignment = state.alignmentData[filename] || {
             originalOffsetX: 0,
             originalOffsetY: 0,
@@ -823,29 +872,25 @@ async function openComparison(filename) {
         state.originalAlignOffsetY = alignment.originalOffsetY;
         state.revisedAlignOffsetX = alignment.revisedOffsetX;
         state.revisedAlignOffsetY = alignment.revisedOffsetY;
-        
-        // Reset view state
+
         state.scale = 1;
         state.offsetX = 0;
         state.offsetY = 0;
-        state.showOriginal = true;
-        state.showRevised = true;
+        state.showOriginal = hasOriginal;
+        state.showRevised = hasRevised;
         state.needsOverlayRebuild = true;
-        toggleOriginalCheckbox.checked = true;
-        toggleRevisedCheckbox.checked = true;
+        toggleOriginalCheckbox.checked = hasOriginal;
+        toggleRevisedCheckbox.checked = hasRevised;
 
         state.viewedDrawings.add(filename);
 
         updateFlagButtonState();
         updateNoteButtonState();
-        
-        currentDrawingName.textContent = filename;
-        
+
+        currentDrawingName.textContent = `${filename} (${formatCategoryLabel(state.drawingCategoryMap[filename] || 'UNKNOWN')})`;
+
         renderComparison();
-        
-        // Preload next 2 drawings in background for smoother workflow
         preloadNearbyDrawings(filename);
-        
     } catch (error) {
         alert('Error loading drawing: ' + error.message);
         currentDrawingName.textContent = filename + ' - Error';
@@ -1116,8 +1161,45 @@ function escapeHtml(value) {
         .replaceAll("'", '&#39;');
 }
 
+function getDrawingCategory(filename) {
+    return state.drawingCategoryMap[filename] || 'UNKNOWN';
+}
+
+function formatCategoryLabel(category) {
+    if (category === 'ORIGINAL_ONLY') return 'Original Only';
+    if (category === 'REVISED_ONLY') return 'Revised Only';
+    if (category === 'BOTH') return 'Both Sets';
+    return 'Unknown';
+}
+
+function getFilteredNoteEntries() {
+    const entries = Object.entries(state.drawingNotes)
+        .filter(([, note]) => typeof note === 'string' && note.trim())
+        .filter(([name]) => {
+            if (state.notesFilter === 'ALL') return true;
+            return getDrawingCategory(name) === state.notesFilter;
+        })
+        .sort(([a], [b]) => a.localeCompare(b));
+
+    return entries;
+}
+
+function renderNotesModalList() {
+    const entries = getFilteredNoteEntries();
+
+    if (entries.length === 0) {
+        notesModalBody.innerHTML = '<p>No notes in this set.</p>';
+    } else {
+        notesModalBody.innerHTML = entries
+            .map(([name, note]) => `<div class="note-row"><div class="note-row-title">${escapeHtml(name)} <small>(${escapeHtml(formatCategoryLabel(getDrawingCategory(name)))})</small></div><div class="note-row-body">${escapeHtml(note).replaceAll('\n', '<br>')}</div></div>`)
+            .join('');
+    }
+}
+
 function openSingleNoteModal(filename) {
     notesModalTitle.textContent = `Note: ${filename}`;
+    notesFilterGroup.style.display = 'none';
+    notesFilterSelect.style.display = 'none';
     const note = getNote(filename);
 
     if (!note) {
@@ -1131,34 +1213,26 @@ function openSingleNoteModal(filename) {
 
 function openNotesModal() {
     notesModalTitle.textContent = 'All Drawing Notes';
-    const entries = Object.entries(state.drawingNotes)
-        .filter(([, note]) => typeof note === 'string' && note.trim())
-        .sort(([a], [b]) => a.localeCompare(b));
-
-    if (entries.length === 0) {
-        notesModalBody.innerHTML = '<p>No notes yet.</p>';
-    } else {
-        notesModalBody.innerHTML = entries
-            .map(([name, note]) => `<div class="note-row"><div class="note-row-title">${escapeHtml(name)}</div><div class="note-row-body">${escapeHtml(note).replaceAll('\n', '<br>')}</div></div>`)
-            .join('');
-    }
-
+    notesFilterGroup.style.display = 'inline';
+    notesFilterSelect.style.display = 'inline-block';
+    notesFilterSelect.value = state.notesFilter;
+    renderNotesModalList();
     notesModal.style.display = 'flex';
 }
 
 function closeNotesModal() {
     notesModal.style.display = 'none';
     notesModalTitle.textContent = 'All Drawing Notes';
+    notesFilterGroup.style.display = 'inline';
+    notesFilterSelect.style.display = 'inline-block';
 }
 
 function exportNotesToExcelCsv() {
-    const rows = [['Drawing', 'Note']];
-    const entries = Object.entries(state.drawingNotes)
-        .filter(([, note]) => typeof note === 'string' && note.trim())
-        .sort(([a], [b]) => a.localeCompare(b));
+    const rows = [['Drawing', 'Set', 'Note']];
+    const entries = getFilteredNoteEntries();
 
     entries.forEach(([name, note]) => {
-        rows.push([name, note.trim()]);
+        rows.push([name, formatCategoryLabel(getDrawingCategory(name)), note.trim()]);
     });
 
     const csv = rows
@@ -1352,6 +1426,13 @@ closeNotesModalBtn.addEventListener('click', () => {
 
 exportNotesBtn.addEventListener('click', () => {
     exportNotesToExcelCsv();
+});
+
+notesFilterSelect.addEventListener('change', () => {
+    state.notesFilter = notesFilterSelect.value;
+    if (notesModal.style.display !== 'none' && notesModalTitle.textContent === 'All Drawing Notes') {
+        renderNotesModalList();
+    }
 });
 
 alignOriginalBtn.addEventListener('click', () => {
