@@ -274,9 +274,22 @@ async function loadFilesFromStoredFolderHandle(handle) {
     return files;
 }
 
+function getSessionRestoreHelpMessage() {
+    const secureContextHint = window.isSecureContext
+        ? ''
+        : ' Also, File System Access APIs only work on secure contexts (https or localhost), so loading from a network IP over plain http will disable auto-restore.';
+
+    return `This browser cannot auto-restore saved folders because Directory Handle APIs are unavailable.${secureContextHint}\n\nPlease reselect Original and Revised folders manually, then click Load Drawings. Your session selections/notes/flags will still be applied.`;
+}
+
 async function tryRestoreFoldersFromSession(sessionData) {
     console.log('[Session] === tryRestoreFoldersFromSession START ===');
     console.log('[Session] showDirectoryPicker available:', !!window.showDirectoryPicker);
+    if (!window.showDirectoryPicker) {
+        console.log('[Session] Cannot auto-restore: showDirectoryPicker unavailable');
+        return false;
+    }
+
     const info = sessionData.folderHandles;
     console.log('[Session] folderHandles from session file:', JSON.stringify(info));
     if (!info || typeof info !== 'object') {
@@ -431,7 +444,11 @@ loadSessionFileInput.addEventListener('change', async (e) => {
             const restored = await tryRestoreFoldersFromSession(sessionData);
             console.log('[Session] Restore result:', restored);
             if (!restored) {
-                alert('Could not auto-locate one or both saved folders. Please reselect the missing folder(s), then click Load Drawings.');
+                if (!window.showDirectoryPicker) {
+                    alert(getSessionRestoreHelpMessage());
+                } else {
+                    alert('Could not auto-locate one or both saved folders. Please reselect the missing folder(s), then click Load Drawings.');
+                }
                 return;
             }
         } else {
