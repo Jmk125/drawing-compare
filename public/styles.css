@@ -505,3 +505,69 @@ body {
     border-radius: 4px;
     background: #fff;
 }
+
+/* Manual Matching */
+.match-banner {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 16px;
+    margin-bottom: 12px;
+    background: #fff3e0;
+    border: 1px solid #ffb74d;
+    border-radius: 6px;
+    color: #e65100;
+    font-weight: 500;
+    font-size: 14px;
+}
+
+.match-banner span {
+    flex: 1;
+}
+
+.match-toggle {
+    border: 1px solid #d0d7de;
+    background: #fff;
+    color: #8a8f98;
+    width: 28px;
+    height: 28px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 14px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.match-toggle:hover {
+    border-color: #ffb74d;
+    color: #e65100;
+    background: #fff8f0;
+}
+
+.match-toggle.active {
+    border-color: #e65100;
+    color: #e65100;
+    background: #fff3e0;
+}
+
+.drawing-item.match-source {
+    background: #fff3e0;
+    border-left-color: #ff9800;
+    box-shadow: 0 0 0 2px #ffb74d;
+}
+
+.drawing-item.match-target {
+    cursor: pointer;
+    border-left-color: #66bb6a;
+}
+
+.drawing-item.match-target:hover {
+    background: #e8f5e9;
+    border-left-color: #43a047;
+    box-shadow: 0 0 0 2px #66bb6a;
+}
+
+.drawing-item.manually-matched {
+    border-right: 3px solid #ff9800;
+}
