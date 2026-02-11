@@ -311,6 +311,32 @@ async function tryRestoreFoldersFromSession(sessionData) {
 }
 
 
+if (window.showDirectoryPicker) {
+    originalFolderInput.addEventListener('click', async (e) => {
+        e.preventDefault();
+        try {
+            const handle = await window.showDirectoryPicker({ id: 'original-folder-handle' });
+            await putStoredFolderHandle(ORIGINAL_HANDLE_KEY, handle);
+            const files = await collectPdfFilesFromDirectoryHandle(handle);
+            setOriginalFiles(files, handle.name);
+        } catch (err) {
+            if (err.name !== 'AbortError') console.warn('Original folder selection failed:', err);
+        }
+    });
+
+    revisedFolderInput.addEventListener('click', async (e) => {
+        e.preventDefault();
+        try {
+            const handle = await window.showDirectoryPicker({ id: 'revised-folder-handle' });
+            await putStoredFolderHandle(REVISED_HANDLE_KEY, handle);
+            const files = await collectPdfFilesFromDirectoryHandle(handle);
+            setRevisedFiles(files, handle.name);
+        } catch (err) {
+            if (err.name !== 'AbortError') console.warn('Revised folder selection failed:', err);
+        }
+    });
+}
+
 originalFolderInput.addEventListener('change', (e) => {
     const files = Array.from(e.target.files).filter(f => f.name.toLowerCase().endsWith('.pdf'));
     setOriginalFiles(files);
@@ -1371,12 +1397,28 @@ function writeOverlayPixels(originalPixels, revisedPixels, outputPixels, showOri
         const revMarked = revStrength > MARK_THRESHOLD;
 
         if (origMarked && revMarked) {
-            const shade = Math.round(Math.min(origLuma, revLuma) * 255);
-            const alpha = Math.max(origStrength, revStrength);
-            outputPixels[i] = shade;
-            outputPixels[i + 1] = shade;
-            outputPixels[i + 2] = shade;
-            outputPixels[i + 3] = Math.max(110, Math.min(255, Math.round(alpha * 255)));
+            if (showOriginal && showRevised) {
+                const shade = Math.round(Math.min(origLuma, revLuma) * 255);
+                const alpha = Math.max(origStrength, revStrength);
+                outputPixels[i] = shade;
+                outputPixels[i + 1] = shade;
+                outputPixels[i + 2] = shade;
+                outputPixels[i + 3] = Math.max(110, Math.min(255, Math.round(alpha * 255)));
+            } else if (showOriginal) {
+                const base = Math.round(origLuma * 255);
+                outputPixels[i] = Math.round(base * 0.15);
+                outputPixels[i + 1] = Math.round(base * 0.15);
+                outputPixels[i + 2] = Math.min(255, Math.round(base * 0.3 + 220));
+                outputPixels[i + 3] = Math.max(90, Math.min(255, Math.round(origStrength * 255)));
+            } else if (showRevised) {
+                const base = Math.round(revLuma * 255);
+                outputPixels[i] = Math.min(255, Math.round(base * 0.3 + 220));
+                outputPixels[i + 1] = Math.round(base * 0.15);
+                outputPixels[i + 2] = Math.round(base * 0.15);
+                outputPixels[i + 3] = Math.max(90, Math.min(255, Math.round(revStrength * 255)));
+            } else {
+                outputPixels[i + 3] = 0;
+            }
         } else if (origMarked && !revMarked) {
             if (showOriginal) {
                 const base = Math.round(origLuma * 255);
