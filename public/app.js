@@ -1460,12 +1460,11 @@ canvasContainer.addEventListener('mousedown', (e) => {
         canvasContainer.classList.add('panning');
     } else if (e.button === 0 && state.isAligning) {
         state.alignDragging = !state.alignDragging;
-        
+
         if (state.alignDragging) {
-            const canvasRect = canvas.getBoundingClientRect();
-            state.alignDragStartX = e.clientX - canvasRect.left;
-            state.alignDragStartY = e.clientY - canvasRect.top;
+            setupAlignDragOverlay(e);
         } else {
+            teardownAlignDragOverlay();
             state.alignmentData[state.currentDrawing] = {
                 originalOffsetX: state.originalAlignOffsetX,
                 originalOffsetY: state.originalAlignOffsetY,
@@ -1485,27 +1484,24 @@ canvasContainer.addEventListener('mousemove', (e) => {
         state.offsetX = e.clientX - state.panStartX;
         state.offsetY = e.clientY - state.panStartY;
         updateCanvasPosition();
-    } else if (state.isAligning && state.alignDragging) {
-        const canvasRect = canvas.getBoundingClientRect();
-        const currentX = e.clientX - canvasRect.left;
-        const currentY = e.clientY - canvasRect.top;
+    } else if (state.isAligning && state.alignDragging && state.alignDragElements) {
+        // Pure CSS transform — zero canvas rendering, GPU-composited
+        const cssDeltaX = e.clientX - state.alignDragStartX;
+        const cssDeltaY = e.clientY - state.alignDragStartY;
 
-        const effectiveScale = canvasRect.width / canvas.width;
-        const deltaX = (currentX - state.alignDragStartX) / effectiveScale;
-        const deltaY = (currentY - state.alignDragStartY) / effectiveScale;
-        
+        const movingOverlay = state.aligningVersion === 'original'
+            ? state.alignDragElements.origOverlay
+            : state.alignDragElements.revOverlay;
+        movingOverlay.style.transform = `translate(${cssDeltaX}px, ${cssDeltaY}px)`;
+
+        // Keep alignment offset in sync (native pixel units)
         if (state.aligningVersion === 'original') {
-            state.originalAlignOffsetX += deltaX;
-            state.originalAlignOffsetY += deltaY;
+            state.originalAlignOffsetX = state.alignDragInitialOffsetX + cssDeltaX / state.alignDragScale;
+            state.originalAlignOffsetY = state.alignDragInitialOffsetY + cssDeltaY / state.alignDragScale;
         } else {
-            state.revisedAlignOffsetX += deltaX;
-            state.revisedAlignOffsetY += deltaY;
+            state.revisedAlignOffsetX = state.alignDragInitialOffsetX + cssDeltaX / state.alignDragScale;
+            state.revisedAlignOffsetY = state.alignDragInitialOffsetY + cssDeltaY / state.alignDragScale;
         }
-        
-        state.alignDragStartX = currentX;
-        state.alignDragStartY = currentY;
-        
-        queueOverlayRebuildAndRender(true);
     }
 });
 
@@ -1577,6 +1573,63 @@ cancelAlignBtn.addEventListener('click', () => {
     alignInstructions.style.display = 'none';
 });
 
+function setupAlignDragOverlay(e) {
+    const containerWidth = canvasContainer.clientWidth;
+    const containerHeight = canvasContainer.clientHeight;
+    const imgW = state.originalImage.width;
+    const imgH = state.originalImage.height;
+    const fitScale = Math.min(containerWidth / imgW, containerHeight / imgH) * 0.9;
+    const dScale = fitScale * state.scale;
+    const cssW = imgW * dScale;
+    const cssH = imgH * dScale;
+    const baseLeft = (containerWidth - cssW) / 2 + state.offsetX;
+    const baseTop = (containerHeight - cssH) / 2 + state.offsetY;
+
+    // White backdrop behind the transparent tinted images
+    const backdrop = document.createElement('div');
+    backdrop.style.cssText = `position:absolute;left:${baseLeft}px;top:${baseTop}px;width:${cssW}px;height:${cssH}px;background:white;pointer-events:none;`;
+
+    // Original overlay
+    const origOverlay = document.createElement('canvas');
+    origOverlay.width = state.alignOriginalTinted.width;
+    origOverlay.height = state.alignOriginalTinted.height;
+    origOverlay.getContext('2d').drawImage(state.alignOriginalTinted, 0, 0);
+    origOverlay.style.cssText = `position:absolute;pointer-events:none;width:${cssW}px;height:${cssH}px;left:${baseLeft + state.originalAlignOffsetX * dScale}px;top:${baseTop + state.originalAlignOffsetY * dScale}px;`;
+
+    // Revised overlay
+    const revOverlay = document.createElement('canvas');
+    revOverlay.width = state.alignRevisedTinted.width;
+    revOverlay.height = state.alignRevisedTinted.height;
+    revOverlay.getContext('2d').drawImage(state.alignRevisedTinted, 0, 0);
+    revOverlay.style.cssText = `position:absolute;pointer-events:none;width:${cssW}px;height:${cssH}px;left:${baseLeft + state.revisedAlignOffsetX * dScale}px;top:${baseTop + state.revisedAlignOffsetY * dScale}px;`;
+
+    // Promote the moving overlay to its own GPU layer
+    const movingOverlay = state.aligningVersion === 'original' ? origOverlay : revOverlay;
+    movingOverlay.style.willChange = 'transform';
+
+    canvasContainer.appendChild(backdrop);
+    canvasContainer.appendChild(origOverlay);
+    canvasContainer.appendChild(revOverlay);
+    canvas.style.visibility = 'hidden';
+
+    state.alignDragElements = { backdrop, origOverlay, revOverlay };
+    state.alignDragScale = dScale;
+    state.alignDragStartX = e.clientX;
+    state.alignDragStartY = e.clientY;
+    state.alignDragInitialOffsetX = state.aligningVersion === 'original' ? state.originalAlignOffsetX : state.revisedAlignOffsetX;
+    state.alignDragInitialOffsetY = state.aligningVersion === 'original' ? state.originalAlignOffsetY : state.revisedAlignOffsetY;
+}
+
+function teardownAlignDragOverlay() {
+    if (state.alignDragElements) {
+        state.alignDragElements.backdrop.remove();
+        state.alignDragElements.origOverlay.remove();
+        state.alignDragElements.revOverlay.remove();
+        state.alignDragElements = null;
+    }
+    canvas.style.visibility = '';
+}
+
 function enterAlignMode(version) {
     state.isAligning = true;
     state.aligningVersion = version;
@@ -1599,6 +1652,7 @@ function exitAlignMode() {
     state.alignDragging = false;
     state.alignOriginalTinted = null;
     state.alignRevisedTinted = null;
+    teardownAlignDragOverlay();
     alignActiveMessage.style.display = 'none';
     canvasContainer.classList.remove('aligning');
 }
