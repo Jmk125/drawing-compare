@@ -938,6 +938,22 @@ function extractSheetNumber(filename) {
     return firstToken.toUpperCase();
 }
 
+const drawingNameCollator = new Intl.Collator(undefined, {
+    numeric: true,
+    sensitivity: 'base'
+});
+
+function compareDrawingNames(a, b) {
+    const aSheet = extractSheetNumber(a);
+    const bSheet = extractSheetNumber(b);
+
+    if (aSheet && bSheet && aSheet !== bSheet) {
+        return drawingNameCollator.compare(aSheet, bSheet);
+    }
+
+    return drawingNameCollator.compare(a, b);
+}
+
 function categorizeFiles() {
     state.originalFileMap = {};
     state.revisedFileMap = {};
@@ -1009,6 +1025,10 @@ function categorizeFiles() {
         state.originalOnlyFiles = state.originalOnlyFiles.filter(f => !matchedOriginals.has(f));
         state.revisedOnlyFiles = state.revisedOnlyFiles.filter(f => !matchedRevised.has(f));
     }
+
+    state.bothFiles.sort(compareDrawingNames);
+    state.originalOnlyFiles.sort(compareDrawingNames);
+    state.revisedOnlyFiles.sort(compareDrawingNames);
 
     state.drawingCategoryMap = {};
     state.originalOnlyFiles.forEach((name) => {
