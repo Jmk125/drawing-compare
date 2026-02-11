@@ -173,7 +173,11 @@ function openHandleDb() {
 }
 
 async function putStoredFolderHandle(key, handle) {
-    if (!window.showDirectoryPicker || !handle) return;
+    if (!window.showDirectoryPicker || !handle) {
+        console.log('[Session] putStoredFolderHandle skipped — showDirectoryPicker:', !!window.showDirectoryPicker, 'handle:', !!handle);
+        return;
+    }
+    console.log('[Session] Storing DirectoryHandle in IndexedDB — key:', key, 'folder:', handle.name);
     const db = await openHandleDb();
     await new Promise((resolve, reject) => {
         const tx = db.transaction(HANDLE_STORE_NAME, 'readwrite');
@@ -182,10 +186,14 @@ async function putStoredFolderHandle(key, handle) {
         tx.onerror = () => reject(tx.error);
     });
     db.close();
+    console.log('[Session] DirectoryHandle stored successfully — key:', key);
 }
 
 async function getStoredFolderHandle(key) {
-    if (!window.showDirectoryPicker) return null;
+    if (!window.showDirectoryPicker) {
+        console.log('[Session] getStoredFolderHandle — showDirectoryPicker not available');
+        return null;
+    }
     const db = await openHandleDb();
     const result = await new Promise((resolve, reject) => {
         const tx = db.transaction(HANDLE_STORE_NAME, 'readonly');
@@ -194,6 +202,7 @@ async function getStoredFolderHandle(key) {
         req.onerror = () => reject(req.error);
     });
     db.close();
+    console.log('[Session] getStoredFolderHandle — key:', key, 'found:', !!result, result ? '(folder: ' + result.name + ')' : '');
     return result;
 }
 
@@ -236,40 +245,60 @@ async function collectPdfFilesFromDirectoryHandle(directoryHandle, files = []) {
 }
 
 async function loadFilesFromStoredFolderHandle(handle) {
-    if (!handle) return [];
+    if (!handle) {
+        console.log('[Session] loadFilesFromStoredFolderHandle — no handle provided');
+        return [];
+    }
 
+    console.log('[Session] Checking permission for folder:', handle.name);
     const permission = await handle.queryPermission({ mode: 'read' });
+    console.log('[Session] Current permission for', handle.name, ':', permission);
     if (permission !== 'granted') {
+        console.log('[Session] Requesting permission for', handle.name);
         const requested = await handle.requestPermission({ mode: 'read' });
+        console.log('[Session] Permission request result for', handle.name, ':', requested);
         if (requested !== 'granted') {
             throw new Error(`Permission denied for folder ${handle.name}`);
         }
     }
 
-    return collectPdfFilesFromDirectoryHandle(handle, []);
+    const files = await collectPdfFilesFromDirectoryHandle(handle, []);
+    console.log('[Session] Loaded', files.length, 'PDF files from', handle.name);
+    return files;
 }
 
 async function tryRestoreFoldersFromSession(sessionData) {
+    console.log('[Session] === tryRestoreFoldersFromSession START ===');
+    console.log('[Session] showDirectoryPicker available:', !!window.showDirectoryPicker);
     const info = sessionData.folderHandles;
-    if (!info || typeof info !== 'object') return false;
+    console.log('[Session] folderHandles from session file:', JSON.stringify(info));
+    if (!info || typeof info !== 'object') {
+        console.log('[Session] No folderHandles in session data — aborting restore');
+        return false;
+    }
 
     const originalKey = info.originalStorageKey || ORIGINAL_HANDLE_KEY;
     const revisedKey = info.revisedStorageKey || REVISED_HANDLE_KEY;
+    console.log('[Session] Looking up handles — originalKey:', originalKey, 'revisedKey:', revisedKey);
 
     let originalHandle = await getStoredFolderHandle(originalKey);
     let revisedHandle = await getStoredFolderHandle(revisedKey);
 
     if (!originalHandle) {
+        console.log('[Session] Original handle NOT found in IndexedDB — prompting user to relocate');
         originalHandle = await promptForFolderRelocation(originalKey, 'Original', info.originalName || '');
     }
     if (!revisedHandle) {
+        console.log('[Session] Revised handle NOT found in IndexedDB — prompting user to relocate');
         revisedHandle = await promptForFolderRelocation(revisedKey, 'Revised', info.revisedName || '');
     }
 
     if (!originalHandle || !revisedHandle) {
+        console.log('[Session] Missing handle(s) after relocation — original:', !!originalHandle, 'revised:', !!revisedHandle);
         return false;
     }
 
+    console.log('[Session] Both handles acquired — original:', originalHandle.name, 'revised:', revisedHandle.name);
     try {
         const [originalFiles, revisedFiles] = await Promise.all([
             loadFilesFromStoredFolderHandle(originalHandle),
@@ -312,29 +341,40 @@ async function tryRestoreFoldersFromSession(sessionData) {
 
 
 if (window.showDirectoryPicker) {
+    console.log('[Session] showDirectoryPicker available — using it for folder selection');
     originalFolderInput.addEventListener('click', async (e) => {
         e.preventDefault();
+        console.log('[Session] Original folder input clicked — opening showDirectoryPicker');
         try {
             const handle = await window.showDirectoryPicker({ id: 'original-folder-handle' });
+            console.log('[Session] User selected original folder:', handle.name);
             await putStoredFolderHandle(ORIGINAL_HANDLE_KEY, handle);
             const files = await collectPdfFilesFromDirectoryHandle(handle);
+            console.log('[Session] Found', files.length, 'PDF files in original folder');
             setOriginalFiles(files, handle.name);
         } catch (err) {
             if (err.name !== 'AbortError') console.warn('Original folder selection failed:', err);
+            else console.log('[Session] Original folder selection cancelled by user');
         }
     });
 
     revisedFolderInput.addEventListener('click', async (e) => {
         e.preventDefault();
+        console.log('[Session] Revised folder input clicked — opening showDirectoryPicker');
         try {
             const handle = await window.showDirectoryPicker({ id: 'revised-folder-handle' });
+            console.log('[Session] User selected revised folder:', handle.name);
             await putStoredFolderHandle(REVISED_HANDLE_KEY, handle);
             const files = await collectPdfFilesFromDirectoryHandle(handle);
+            console.log('[Session] Found', files.length, 'PDF files in revised folder');
             setRevisedFiles(files, handle.name);
         } catch (err) {
             if (err.name !== 'AbortError') console.warn('Revised folder selection failed:', err);
+            else console.log('[Session] Revised folder selection cancelled by user');
         }
     });
+} else {
+    console.log('[Session] showDirectoryPicker NOT available — falling back to <input> file picker');
 }
 
 originalFolderInput.addEventListener('change', (e) => {
@@ -360,19 +400,27 @@ loadSessionFileInput.addEventListener('change', async (e) => {
         const text = await file.text();
         const sessionData = JSON.parse(text);
         state.pendingSessionData = sessionData;
+        console.log('[Session] === Loading session file ===');
+        console.log('[Session] Original files already loaded:', state.originalFiles.length);
+        console.log('[Session] Revised files already loaded:', state.revisedFiles.length);
 
         if (state.originalFiles.length === 0 || state.revisedFiles.length === 0) {
+            console.log('[Session] Folders not yet loaded — attempting restore from session');
             const restored = await tryRestoreFoldersFromSession(sessionData);
+            console.log('[Session] Restore result:', restored);
             if (!restored) {
                 alert('Could not auto-locate one or both saved folders. Please reselect the missing folder(s), then click Load Drawings.');
                 return;
             }
+        } else {
+            console.log('[Session] Folders already loaded — skipping restore');
         }
 
         applySessionData(sessionData);
         state.pendingSessionData = null;
         showDrawingList();
     } catch (error) {
+        console.error('[Session] Failed to load session:', error);
         alert('Failed to load session file: ' + error.message);
     } finally {
         loadSessionFileInput.value = '';
