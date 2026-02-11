@@ -1116,6 +1116,9 @@ function populateList(listId, files, withCheckbox) {
             const checkbox = document.createElement('input');
             checkbox.type = 'checkbox';
             checkbox.checked = state.selectedDrawings.has(filename);
+            checkbox.addEventListener('click', (e) => {
+                e.stopPropagation();
+            });
             checkbox.addEventListener('change', (e) => {
                 if (e.target.checked) {
                     state.selectedDrawings.add(filename);
@@ -1129,6 +1132,15 @@ function populateList(listId, files, withCheckbox) {
         const span = document.createElement('span');
         span.textContent = filename;
 
+        const handleDrawingItemActivate = () => {
+            if (isMatchTarget) {
+                completeMatch(filename);
+                return;
+            }
+
+            openComparison(filename);
+        };
+
         // Show matched-pair name as tooltip for manually matched drawings
         const matchedRevName = state.manualMatches[filename];
         if (matchedRevName && state.drawingCategoryMap[filename] === 'BOTH') {
@@ -1136,12 +1148,8 @@ function populateList(listId, files, withCheckbox) {
             itemEl.classList.add('manually-matched');
         }
 
-        if (isMatchTarget) {
-            // In matching mode, clicking a target item completes the match
-            span.addEventListener('click', () => completeMatch(filename));
-        } else {
-            span.addEventListener('click', () => openComparison(filename));
-        }
+        // Make the entire row clickable for a more reliable drawing selection flow.
+        itemEl.addEventListener('click', handleDrawingItemActivate);
 
         const noteBtn = document.createElement('button');
         noteBtn.type = 'button';
