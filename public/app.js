@@ -45,6 +45,8 @@ const state = {
     pendingSessionData: null,
     originalFolderName: '',
     revisedFolderName: '',
+    originalFolderHandle: null,
+    revisedFolderHandle: null,
     drawingCategoryMap: {},
     notesFilter: 'BOTH',
     listScrollPositions: {
@@ -156,6 +158,11 @@ function setRevisedFiles(files, folderName = '') {
     state.revisedFolderName = folderName || getFolderNameFromFiles(files);
     const label = state.revisedFolderName ? ` (${state.revisedFolderName})` : '';
     revisedCountEl.textContent = `${files.length} PDF files selected${label}`;
+}
+
+function buildSessionHandleKey(prefix) {
+    const token = Math.random().toString(36).slice(2, 10);
+    return `${prefix}-${Date.now()}-${token}`;
 }
 
 function openHandleDb() {
@@ -284,6 +291,15 @@ async function tryRestoreFoldersFromSession(sessionData) {
     let originalHandle = await getStoredFolderHandle(originalKey);
     let revisedHandle = await getStoredFolderHandle(revisedKey);
 
+    if (!originalHandle && originalKey !== ORIGINAL_HANDLE_KEY) {
+        console.log('[Session] Original session-specific handle missing — falling back to legacy key');
+        originalHandle = await getStoredFolderHandle(ORIGINAL_HANDLE_KEY);
+    }
+    if (!revisedHandle && revisedKey !== REVISED_HANDLE_KEY) {
+        console.log('[Session] Revised session-specific handle missing — falling back to legacy key');
+        revisedHandle = await getStoredFolderHandle(REVISED_HANDLE_KEY);
+    }
+
     if (!originalHandle) {
         console.log('[Session] Original handle NOT found in IndexedDB — prompting user to relocate');
         originalHandle = await promptForFolderRelocation(originalKey, 'Original', info.originalName || '');
@@ -311,6 +327,8 @@ async function tryRestoreFoldersFromSession(sessionData) {
 
         setOriginalFiles(originalFiles, info.originalName || originalHandle.name || '');
         setRevisedFiles(revisedFiles, info.revisedName || revisedHandle.name || '');
+        state.originalFolderHandle = originalHandle;
+        state.revisedFolderHandle = revisedHandle;
         return true;
     } catch (error) {
         console.warn('Unable to restore folders from session handles:', error);
@@ -331,6 +349,8 @@ async function tryRestoreFoldersFromSession(sessionData) {
 
             setOriginalFiles(originalFiles, info.originalName || originalHandle.name || '');
             setRevisedFiles(revisedFiles, info.revisedName || revisedHandle.name || '');
+            state.originalFolderHandle = originalHandle;
+            state.revisedFolderHandle = revisedHandle;
             return true;
         } catch (retryError) {
             console.warn('Retry restore failed:', retryError);
@@ -352,6 +372,7 @@ if (window.showDirectoryPicker) {
             const files = await collectPdfFilesFromDirectoryHandle(handle);
             console.log('[Session] Found', files.length, 'PDF files in original folder');
             setOriginalFiles(files, handle.name);
+            state.originalFolderHandle = handle;
         } catch (err) {
             if (err.name !== 'AbortError') console.warn('Original folder selection failed:', err);
             else console.log('[Session] Original folder selection cancelled by user');
@@ -368,6 +389,7 @@ if (window.showDirectoryPicker) {
             const files = await collectPdfFilesFromDirectoryHandle(handle);
             console.log('[Session] Found', files.length, 'PDF files in revised folder');
             setRevisedFiles(files, handle.name);
+            state.revisedFolderHandle = handle;
         } catch (err) {
             if (err.name !== 'AbortError') console.warn('Revised folder selection failed:', err);
             else console.log('[Session] Revised folder selection cancelled by user');
@@ -515,7 +537,12 @@ function updateFlagButtonState() {
 }
 
 
-function buildSessionData() {
+function buildSessionData(folderHandleInfo = {}) {
+    const {
+        originalStorageKey = ORIGINAL_HANDLE_KEY,
+        revisedStorageKey = REVISED_HANDLE_KEY
+    } = folderHandleInfo;
+
     return {
         version: 1,
         savedAt: new Date().toISOString(),
@@ -527,8 +554,8 @@ function buildSessionData() {
         flaggedDrawings: Array.from(state.flaggedDrawings),
         drawingNotes: state.drawingNotes,
         folderHandles: {
-            originalStorageKey: ORIGINAL_HANDLE_KEY,
-            revisedStorageKey: REVISED_HANDLE_KEY,
+            originalStorageKey,
+            revisedStorageKey,
             originalName: state.originalFolderName,
             revisedName: state.revisedFolderName
         },
@@ -539,14 +566,21 @@ function buildSessionData() {
 }
 
 async function ensureStoredFolderHandlesForSession() {
-    if (!window.showDirectoryPicker) return;
+    if (!window.showDirectoryPicker) return null;
 
     try {
-        const hasOriginal = await getStoredFolderHandle(ORIGINAL_HANDLE_KEY);
-        if (!hasOriginal && state.originalFiles.length > 0) {
+        if (!state.originalFolderHandle) {
+            const hasOriginal = await getStoredFolderHandle(ORIGINAL_HANDLE_KEY);
+            if (hasOriginal) {
+                state.originalFolderHandle = hasOriginal;
+            }
+        }
+
+        if (!state.originalFolderHandle && state.originalFiles.length > 0) {
             const originalHandle = await window.showDirectoryPicker({ id: 'original-folder-handle' });
             if (originalHandle) {
                 await putStoredFolderHandle(ORIGINAL_HANDLE_KEY, originalHandle);
+                state.originalFolderHandle = originalHandle;
                 state.originalFolderName = state.originalFolderName || originalHandle.name || '';
             }
         }
@@ -555,22 +589,41 @@ async function ensureStoredFolderHandlesForSession() {
     }
 
     try {
-        const hasRevised = await getStoredFolderHandle(REVISED_HANDLE_KEY);
-        if (!hasRevised && state.revisedFiles.length > 0) {
+        if (!state.revisedFolderHandle) {
+            const hasRevised = await getStoredFolderHandle(REVISED_HANDLE_KEY);
+            if (hasRevised) {
+                state.revisedFolderHandle = hasRevised;
+            }
+        }
+
+        if (!state.revisedFolderHandle && state.revisedFiles.length > 0) {
             const revisedHandle = await window.showDirectoryPicker({ id: 'revised-folder-handle' });
             if (revisedHandle) {
                 await putStoredFolderHandle(REVISED_HANDLE_KEY, revisedHandle);
+                state.revisedFolderHandle = revisedHandle;
                 state.revisedFolderName = state.revisedFolderName || revisedHandle.name || '';
             }
         }
     } catch (error) {
         console.warn('Revised folder-handle capture skipped:', error);
     }
+
+    if (!state.originalFolderHandle || !state.revisedFolderHandle) {
+        return null;
+    }
+
+    const originalStorageKey = buildSessionHandleKey('original-folder-handle');
+    const revisedStorageKey = buildSessionHandleKey('revised-folder-handle');
+
+    await putStoredFolderHandle(originalStorageKey, state.originalFolderHandle);
+    await putStoredFolderHandle(revisedStorageKey, state.revisedFolderHandle);
+
+    return { originalStorageKey, revisedStorageKey };
 }
 
 async function downloadSessionFile() {
-    await ensureStoredFolderHandlesForSession();
-    const sessionData = buildSessionData();
+    const folderHandleInfo = await ensureStoredFolderHandlesForSession();
+    const sessionData = buildSessionData(folderHandleInfo || {});
     const blob = new Blob([JSON.stringify(sessionData, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
