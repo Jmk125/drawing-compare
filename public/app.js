@@ -51,7 +51,11 @@ const state = {
         'original-only-list': 0,
         'both-list': 0,
         'revised-only-list': 0
-    }
+    },
+    manualMatches: {},
+    matchingMode: false,
+    matchingSource: null,
+    matchingSourceSide: null
 };
 
 state.compositeCanvas = document.createElement('canvas');
@@ -404,6 +408,22 @@ function getNote(filename) {
     return (state.drawingNotes[filename] || '').trim();
 }
 
+function loadManualMatches() {
+    const saved = localStorage.getItem('manual_matches_local');
+    if (saved) {
+        try {
+            const parsed = JSON.parse(saved);
+            state.manualMatches = parsed && typeof parsed === 'object' ? parsed : {};
+        } catch (e) {
+            state.manualMatches = {};
+        }
+    }
+}
+
+function saveManualMatches() {
+    localStorage.setItem('manual_matches_local', JSON.stringify(state.manualMatches));
+}
+
 function updateNoteButtonState() {
     if (!state.currentDrawing) return;
 
@@ -439,6 +459,7 @@ function buildSessionData() {
             revisedName: state.revisedFolderName
         },
         alignmentData: state.alignmentData,
+        manualMatches: state.manualMatches,
         letterFilter: state.currentLetterFilter
     };
 }
@@ -535,12 +556,24 @@ function applySessionData(sessionData) {
         };
     });
 
+    const sessionMatches = sessionData.manualMatches && typeof sessionData.manualMatches === 'object'
+        ? sessionData.manualMatches
+        : {};
+    state.manualMatches = {};
+    Object.entries(sessionMatches).forEach(([origName, revName]) => {
+        if (typeof revName !== 'string') return;
+        if (originalSet.has(origName) && revisedSet.has(revName)) {
+            state.manualMatches[origName] = revName;
+        }
+    });
+
     const requestedFilter = sessionData.letterFilter;
     state.currentLetterFilter = typeof requestedFilter === 'string' ? requestedFilter.toUpperCase() : 'ALL';
 
     saveAlignmentData();
     saveFlaggedData();
     saveNotesData();
+    saveManualMatches();
 }
 
 loadFoldersBtn.addEventListener('click', async () => {
@@ -554,6 +587,7 @@ loadFoldersBtn.addEventListener('click', async () => {
     errorMessage.style.display = 'none';
     
     try {
+        loadManualMatches();
         categorizeFiles();
         if (!state.originalFolderName) {
             state.originalFolderName = getFolderNameFromFiles(state.originalFiles);
@@ -567,6 +601,7 @@ loadFoldersBtn.addEventListener('click', async () => {
 
         if (state.pendingSessionData) {
             applySessionData(state.pendingSessionData);
+            categorizeFiles();
             state.pendingSessionData = null;
         }
 
@@ -620,6 +655,27 @@ function categorizeFiles() {
     state.revisedOnlyFiles = revisedNames.filter(f => !originalSet.has(f));
     state.bothFiles = originalNames.filter(f => revisedSet.has(f));
 
+    // Apply manual matches: move matched pairs from only-lists to both-list
+    const matchedOriginals = new Set();
+    const matchedRevised = new Set();
+    const originalOnlySet = new Set(state.originalOnlyFiles);
+    const revisedOnlySet = new Set(state.revisedOnlyFiles);
+
+    Object.entries(state.manualMatches).forEach(([origName, revName]) => {
+        if (originalOnlySet.has(origName) && revisedOnlySet.has(revName)) {
+            state.bothFiles.push(origName);
+            matchedOriginals.add(origName);
+            matchedRevised.add(revName);
+            // Map the revised file under the original's name for comparison lookups
+            state.revisedFileMap[origName] = state.revisedFileMap[revName];
+        }
+    });
+
+    if (matchedOriginals.size > 0) {
+        state.originalOnlyFiles = state.originalOnlyFiles.filter(f => !matchedOriginals.has(f));
+        state.revisedOnlyFiles = state.revisedOnlyFiles.filter(f => !matchedRevised.has(f));
+    }
+
     state.drawingCategoryMap = {};
     state.originalOnlyFiles.forEach((name) => {
         state.drawingCategoryMap[name] = 'ORIGINAL_ONLY';
@@ -667,6 +723,17 @@ function populateList(listId, files, withCheckbox) {
     const listEl = document.getElementById(listId);
     listEl.innerHTML = '';
 
+    const isOriginalOnly = listId === 'original-only-list';
+    const isRevisedOnly = listId === 'revised-only-list';
+    const isOnlyList = isOriginalOnly || isRevisedOnly;
+    const side = isOriginalOnly ? 'original' : (isRevisedOnly ? 'revised' : null);
+
+    // In matching mode, determine if this list is the target list
+    const isMatchTarget = state.matchingMode && (
+        (state.matchingSourceSide === 'original' && isRevisedOnly) ||
+        (state.matchingSourceSide === 'revised' && isOriginalOnly)
+    );
+
     files.forEach(filename => {
         const itemEl = document.createElement('div');
         itemEl.className = 'drawing-item';
@@ -677,6 +744,14 @@ function populateList(listId, files, withCheckbox) {
 
         if (state.flaggedDrawings.has(filename)) {
             itemEl.classList.add('flagged');
+        }
+
+        // Matching mode visual states
+        if (state.matchingMode && filename === state.matchingSource) {
+            itemEl.classList.add('match-source');
+        }
+        if (isMatchTarget) {
+            itemEl.classList.add('match-target');
         }
 
         if (withCheckbox) {
@@ -697,7 +772,20 @@ function populateList(listId, files, withCheckbox) {
 
         const span = document.createElement('span');
         span.textContent = filename;
-        span.addEventListener('click', () => openComparison(filename));
+
+        // Show matched-pair name as tooltip for manually matched drawings
+        const matchedRevName = state.manualMatches[filename];
+        if (matchedRevName && state.drawingCategoryMap[filename] === 'BOTH') {
+            span.title = 'Matched with: ' + matchedRevName;
+            itemEl.classList.add('manually-matched');
+        }
+
+        if (isMatchTarget) {
+            // In matching mode, clicking a target item completes the match
+            span.addEventListener('click', () => completeMatch(filename));
+        } else {
+            span.addEventListener('click', () => openComparison(filename));
+        }
 
         const noteBtn = document.createElement('button');
         noteBtn.type = 'button';
@@ -724,6 +812,36 @@ function populateList(listId, files, withCheckbox) {
         itemEl.appendChild(span);
         itemEl.appendChild(noteBtn);
         itemEl.appendChild(flagBtn);
+
+        // Add match button for original-only and revised-only lists
+        if (isOnlyList) {
+            const matchBtn = document.createElement('button');
+            matchBtn.type = 'button';
+            matchBtn.className = 'match-toggle';
+
+            if (state.matchingMode && filename === state.matchingSource) {
+                matchBtn.textContent = '✕';
+                matchBtn.title = 'Cancel matching';
+                matchBtn.classList.add('active');
+                matchBtn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    cancelMatching();
+                });
+            } else if (!state.matchingMode) {
+                matchBtn.textContent = '🔗';
+                matchBtn.title = 'Match with a drawing in the other list';
+                matchBtn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    startMatching(filename, side);
+                });
+            } else {
+                // In matching mode but not the source — hide the button
+                matchBtn.style.visibility = 'hidden';
+            }
+
+            itemEl.appendChild(matchBtn);
+        }
+
         listEl.appendChild(itemEl);
     });
 }
@@ -769,6 +887,88 @@ function refreshDrawingLists() {
     populateList('both-list', getFilteredFiles(state.bothFiles), true);
 
     restoreDrawingListScrollPositions();
+    updateMatchBanner();
+}
+
+// --- Manual Matching ---
+
+let matchBannerEl = null;
+
+function ensureMatchBanner() {
+    if (matchBannerEl) return matchBannerEl;
+    matchBannerEl = document.createElement('div');
+    matchBannerEl.id = 'match-banner';
+    matchBannerEl.className = 'match-banner';
+    matchBannerEl.style.display = 'none';
+
+    const listContainer = document.querySelector('.list-container');
+    listContainer.parentNode.insertBefore(matchBannerEl, listContainer);
+    return matchBannerEl;
+}
+
+function updateMatchBanner() {
+    const banner = ensureMatchBanner();
+    if (!state.matchingMode) {
+        banner.style.display = 'none';
+        return;
+    }
+    const targetSide = state.matchingSourceSide === 'original' ? 'Revised Only' : 'Original Only';
+    banner.innerHTML = '';
+    banner.style.display = 'flex';
+
+    const msg = document.createElement('span');
+    msg.textContent = `Select a drawing from the ${targetSide} list to match with "${state.matchingSource}"`;
+    banner.appendChild(msg);
+
+    const cancelBtn = document.createElement('button');
+    cancelBtn.className = 'btn-small';
+    cancelBtn.textContent = 'Cancel';
+    cancelBtn.addEventListener('click', () => cancelMatching());
+    banner.appendChild(cancelBtn);
+}
+
+function startMatching(filename, side) {
+    state.matchingMode = true;
+    state.matchingSource = filename;
+    state.matchingSourceSide = side;
+    refreshDrawingLists();
+}
+
+function cancelMatching() {
+    state.matchingMode = false;
+    state.matchingSource = null;
+    state.matchingSourceSide = null;
+    refreshDrawingLists();
+}
+
+function completeMatch(targetFilename) {
+    if (!state.matchingMode || !state.matchingSource) return;
+
+    let origName, revName;
+    if (state.matchingSourceSide === 'original') {
+        origName = state.matchingSource;
+        revName = targetFilename;
+    } else {
+        origName = targetFilename;
+        revName = state.matchingSource;
+    }
+
+    state.manualMatches[origName] = revName;
+    saveManualMatches();
+
+    // Exit matching mode
+    state.matchingMode = false;
+    state.matchingSource = null;
+    state.matchingSourceSide = null;
+
+    // Re-categorize files with the new match applied
+    categorizeFiles();
+
+    // Update counts and refresh
+    document.getElementById('original-only-count').textContent = state.originalOnlyFiles.length;
+    document.getElementById('revised-only-count').textContent = state.revisedOnlyFiles.length;
+    document.getElementById('both-count').textContent = state.bothFiles.length;
+    refreshDrawingLists();
 }
 
 function toggleDrawingFlag(filename) {
@@ -1180,9 +1380,9 @@ function writeOverlayPixels(originalPixels, revisedPixels, outputPixels, showOri
         } else if (origMarked && !revMarked) {
             if (showOriginal) {
                 const base = Math.round(origLuma * 255);
-                outputPixels[i] = Math.round(base * 0.35);
-                outputPixels[i + 1] = Math.round(base * 0.35);
-                outputPixels[i + 2] = Math.min(255, Math.round(base * 0.8 + 110));
+                outputPixels[i] = Math.round(base * 0.15);
+                outputPixels[i + 1] = Math.round(base * 0.15);
+                outputPixels[i + 2] = Math.min(255, Math.round(base * 0.3 + 220));
                 outputPixels[i + 3] = Math.max(90, Math.min(255, Math.round(origStrength * 255)));
             } else {
                 outputPixels[i + 3] = 0;
@@ -1190,9 +1390,9 @@ function writeOverlayPixels(originalPixels, revisedPixels, outputPixels, showOri
         } else if (!origMarked && revMarked) {
             if (showRevised) {
                 const base = Math.round(revLuma * 255);
-                outputPixels[i] = Math.min(255, Math.round(base * 0.8 + 110));
-                outputPixels[i + 1] = Math.round(base * 0.35);
-                outputPixels[i + 2] = Math.round(base * 0.35);
+                outputPixels[i] = Math.min(255, Math.round(base * 0.3 + 220));
+                outputPixels[i + 1] = Math.round(base * 0.15);
+                outputPixels[i + 2] = Math.round(base * 0.15);
                 outputPixels[i + 3] = Math.max(90, Math.min(255, Math.round(revStrength * 255)));
             } else {
                 outputPixels[i + 3] = 0;
@@ -1639,10 +1839,10 @@ function enterAlignMode(version) {
 
     // Pre-render tinted canvases once so alignment drag is just two drawImage calls
     if (state.originalImage) {
-        state.alignOriginalTinted = createTintedCanvas(state.originalImage, 94, 140, 255);
+        state.alignOriginalTinted = createTintedCanvas(state.originalImage, 30, 80, 255);
     }
     if (state.revisedImage) {
-        state.alignRevisedTinted = createTintedCanvas(state.revisedImage, 255, 110, 110);
+        state.alignRevisedTinted = createTintedCanvas(state.revisedImage, 255, 40, 40);
     }
 }
 
