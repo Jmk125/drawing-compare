@@ -71,6 +71,7 @@ state.needsOverlayRebuild = true;
 state.overlayRebuildFrame = null;
 
 const MARK_THRESHOLD = 0.02;
+const ALIGN_FINE_TUNE_FACTOR = 0.1;
 
 // DOM Elements
 const folderSelectionView = document.getElementById('folder-selection');
@@ -2068,9 +2069,17 @@ canvasContainer.addEventListener('mousemove', (e) => {
         updateCanvasPosition();
     } else if (state.isAligning && state.alignDragging && state.alignDragElements) {
         // Pure CSS transform — zero canvas rendering, GPU-composited
-        const fineTuneFactor = e.shiftKey ? 0.2 : 1;
-        const cssDeltaX = (e.clientX - state.alignDragStartX) * fineTuneFactor;
-        const cssDeltaY = (e.clientY - state.alignDragStartY) * fineTuneFactor;
+        // Use incremental deltas so toggling Shift mid-drag doesn't cause a jump.
+        const fineTuneFactor = e.shiftKey ? ALIGN_FINE_TUNE_FACTOR : 1;
+        const pointerDeltaX = e.clientX - state.alignDragLastClientX;
+        const pointerDeltaY = e.clientY - state.alignDragLastClientY;
+        state.alignDragCssDeltaX += pointerDeltaX * fineTuneFactor;
+        state.alignDragCssDeltaY += pointerDeltaY * fineTuneFactor;
+        state.alignDragLastClientX = e.clientX;
+        state.alignDragLastClientY = e.clientY;
+
+        const cssDeltaX = state.alignDragCssDeltaX;
+        const cssDeltaY = state.alignDragCssDeltaY;
 
         const movingOverlay = state.aligningVersion === 'original'
             ? state.alignDragElements.origOverlay
@@ -2199,6 +2208,10 @@ function setupAlignDragOverlay(e) {
     state.alignDragScale = dScale;
     state.alignDragStartX = e.clientX;
     state.alignDragStartY = e.clientY;
+    state.alignDragLastClientX = e.clientX;
+    state.alignDragLastClientY = e.clientY;
+    state.alignDragCssDeltaX = 0;
+    state.alignDragCssDeltaY = 0;
     state.alignDragInitialOffsetX = state.aligningVersion === 'original' ? state.originalAlignOffsetX : state.revisedAlignOffsetX;
     state.alignDragInitialOffsetY = state.aligningVersion === 'original' ? state.originalAlignOffsetY : state.revisedAlignOffsetY;
 }
