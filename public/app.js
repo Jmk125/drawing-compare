@@ -39,6 +39,7 @@ const state = {
     flaggedDrawings: new Set(),
     drawingNotes: {},
     currentLetterFilter: 'ALL',
+    statusFilter: 'ALL',
     isAlignmentPreview: false,
     alignOriginalTinted: null,
     alignRevisedTinted: null,
@@ -87,6 +88,7 @@ const loadingMessage = document.getElementById('loading-message');
 const errorMessage = document.getElementById('error-message');
 const backToFoldersBtn = document.getElementById('back-to-folders');
 const letterFilterSelect = document.getElementById('letter-filter');
+const statusFilterSelect = document.getElementById('status-filter');
 const backToListBtn = document.getElementById('back-to-list');
 const canvas = document.getElementById('comparison-canvas');
 const ctx = canvas.getContext('2d');
@@ -578,7 +580,8 @@ function buildSessionData(folderHandleInfo = {}) {
         },
         alignmentData: state.alignmentData,
         manualMatches: state.manualMatches,
-        letterFilter: state.currentLetterFilter
+        letterFilter: state.currentLetterFilter,
+        statusFilter: state.statusFilter
     };
 }
 
@@ -714,6 +717,9 @@ function applySessionData(sessionData) {
     const requestedFilter = sessionData.letterFilter;
     state.currentLetterFilter = typeof requestedFilter === 'string' ? requestedFilter.toUpperCase() : 'ALL';
 
+    const requestedStatusFilter = sessionData.statusFilter;
+    state.statusFilter = typeof requestedStatusFilter === 'string' ? requestedStatusFilter.toUpperCase() : 'ALL';
+
     saveAlignmentData();
     saveFlaggedData();
     saveNotesData();
@@ -758,30 +764,164 @@ loadFoldersBtn.addEventListener('click', async () => {
     }
 });
 
-async function convertPDFToImage(pdfFile) {
-    const formData = new FormData();
-    formData.append('pdf', pdfFile);
-    
-    const response = await fetch(`${API_BASE}/api/convert-pdf`, {
-        method: 'POST',
-        body: formData
-    });
-    
-    const data = await response.json();
-    
-    if (!data.success) {
-        throw new Error(`Failed to convert ${pdfFile.name}: ${data.error}`);
+function buildPdfCacheSignature(pdfFile) {
+    return `${pdfFile.name}|${pdfFile.size}|${pdfFile.lastModified}`;
+}
+
+function base64ToUint8Array(base64) {
+    const binary = atob(base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i += 1) {
+        bytes[i] = binary.charCodeAt(i);
     }
-    
+    return bytes;
+}
+
+async function loadImageFromBase64(base64) {
     const img = new Image();
-    img.src = 'data:image/png;base64,' + data.image;
-    
+    img.src = 'data:image/png;base64,' + base64;
+
     await new Promise((resolve, reject) => {
         img.onload = resolve;
         img.onerror = reject;
     });
-    
+
     return img;
+}
+
+async function getOrCreateConvertedCacheDir(folderHandle) {
+    if (!folderHandle) return null;
+    if (!window.showDirectoryPicker) return null;
+
+    try {
+        return await folderHandle.getDirectoryHandle('_converted_images', { create: true });
+    } catch (error) {
+        console.warn('Unable to access _converted_images cache folder:', error);
+        return null;
+    }
+}
+
+async function tryLoadCachedConvertedImage(pdfFile, folderHandle) {
+    const cacheDir = await getOrCreateConvertedCacheDir(folderHandle);
+    if (!cacheDir) return null;
+
+    const cacheFilename = `${pdfFile.name}.png`;
+    const metaFilename = `${pdfFile.name}.meta.json`;
+
+    try {
+        const [imageHandle, metaHandle] = await Promise.all([
+            cacheDir.getFileHandle(cacheFilename),
+            cacheDir.getFileHandle(metaFilename)
+        ]);
+
+        const [cachedImageFile, metaFile] = await Promise.all([
+            imageHandle.getFile(),
+            metaHandle.getFile()
+        ]);
+
+        const meta = JSON.parse(await metaFile.text());
+        const expectedSignature = buildPdfCacheSignature(pdfFile);
+        if (!meta || meta.signature !== expectedSignature) {
+            return null;
+        }
+
+        const imageBase64 = await new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => {
+                const result = reader.result || '';
+                const marker = 'base64,';
+                const index = String(result).indexOf(marker);
+                if (index === -1) {
+                    reject(new Error('Invalid cached image format'));
+                    return;
+                }
+                resolve(String(result).slice(index + marker.length));
+            };
+            reader.onerror = () => reject(reader.error || new Error('Failed to read cached image'));
+            reader.readAsDataURL(cachedImageFile);
+        });
+
+        const img = await loadImageFromBase64(imageBase64);
+        return { img, base64: imageBase64, fromDiskCache: true };
+    } catch (_error) {
+        return null;
+    }
+}
+
+async function saveConvertedImageToDiskCache(pdfFile, folderHandle, base64Image) {
+    const cacheDir = await getOrCreateConvertedCacheDir(folderHandle);
+    if (!cacheDir) return;
+
+    try {
+        const cacheFilename = `${pdfFile.name}.png`;
+        const metaFilename = `${pdfFile.name}.meta.json`;
+        const [imageHandle, metaHandle] = await Promise.all([
+            cacheDir.getFileHandle(cacheFilename, { create: true }),
+            cacheDir.getFileHandle(metaFilename, { create: true })
+        ]);
+
+        const imageWritable = await imageHandle.createWritable();
+        await imageWritable.write(base64ToUint8Array(base64Image));
+        await imageWritable.close();
+
+        const metaWritable = await metaHandle.createWritable();
+        await metaWritable.write(JSON.stringify({
+            signature: buildPdfCacheSignature(pdfFile),
+            updatedAt: new Date().toISOString()
+        }));
+        await metaWritable.close();
+    } catch (error) {
+        console.warn('Failed to write converted image cache:', error);
+    }
+}
+
+async function convertPDFToImage(pdfFile) {
+    const formData = new FormData();
+    formData.append('pdf', pdfFile);
+
+    const response = await fetch(`${API_BASE}/api/convert-pdf`, {
+        method: 'POST',
+        body: formData
+    });
+
+    const data = await response.json();
+
+    if (!data.success) {
+        throw new Error(`Failed to convert ${pdfFile.name}: ${data.error}`);
+    }
+
+    const img = await loadImageFromBase64(data.image);
+
+    return { img, base64: data.image, fromDiskCache: false };
+}
+
+async function loadDrawingImageWithCache(filename, side) {
+    const imageMap = side === 'original' ? state.originalImageMap : state.revisedImageMap;
+    if (imageMap[filename]) {
+        return imageMap[filename];
+    }
+
+    const fileMap = side === 'original' ? state.originalFileMap : state.revisedFileMap;
+    const folderHandle = side === 'original' ? state.originalFolderHandle : state.revisedFolderHandle;
+    const pdfFile = fileMap[filename];
+
+    if (!pdfFile) {
+        return null;
+    }
+
+    const cached = await tryLoadCachedConvertedImage(pdfFile, folderHandle);
+    if (cached) {
+        imageMap[filename] = cached.img;
+        return cached.img;
+    }
+
+    const converted = await convertPDFToImage(pdfFile);
+    imageMap[filename] = converted.img;
+    if (converted.base64) {
+        await saveConvertedImageToDiskCache(pdfFile, folderHandle, converted.base64);
+    }
+
+    return converted.img;
 }
 
 function showError(message) {
@@ -856,7 +996,8 @@ function showDrawingList() {
     document.getElementById('both-count').textContent = state.bothFiles.length;
 
     buildLetterFilterOptions();
-    
+    statusFilterSelect.value = state.statusFilter;
+
     refreshDrawingLists();
     
     folderSelectionView.style.display = 'none';
@@ -990,12 +1131,24 @@ function populateList(listId, files, withCheckbox) {
     });
 }
 
-function getFilteredFiles(files) {
-    if (state.currentLetterFilter === 'ALL') {
-        return files;
-    }
+function drawingPassesStatusFilter(name) {
+    if (state.statusFilter === 'ALL') return true;
 
-    return files.filter(name => name.toUpperCase().startsWith(state.currentLetterFilter));
+    const hasNote = Boolean(getNote(name));
+    const isFlagged = state.flaggedDrawings.has(name);
+
+    if (state.statusFilter === 'NOTED') return hasNote;
+    if (state.statusFilter === 'FLAGGED') return isFlagged;
+    if (state.statusFilter === 'NOTED_OR_FLAGGED') return hasNote || isFlagged;
+
+    return true;
+}
+
+function getFilteredFiles(files) {
+    return files.filter((name) => {
+        const matchesLetter = state.currentLetterFilter === 'ALL' || name.toUpperCase().startsWith(state.currentLetterFilter);
+        return matchesLetter && drawingPassesStatusFilter(name);
+    });
 }
 
 function buildLetterFilterOptions() {
@@ -1142,6 +1295,11 @@ letterFilterSelect.addEventListener('change', () => {
     refreshDrawingLists();
 });
 
+statusFilterSelect.addEventListener('change', () => {
+    state.statusFilter = statusFilterSelect.value;
+    refreshDrawingLists();
+});
+
 exportSelectedBtn.addEventListener('click', async () => {
     if (state.selectedDrawings.size === 0) {
         alert('Please select at least one drawing to export');
@@ -1260,16 +1418,8 @@ async function openComparison(filename) {
         const hasOriginal = Boolean(state.originalFileMap[filename]);
         const hasRevised = Boolean(state.revisedFileMap[filename]);
 
-        if (hasOriginal && !state.originalImageMap[filename]) {
-            state.originalImageMap[filename] = await convertPDFToImage(state.originalFileMap[filename]);
-        }
-
-        if (hasRevised && !state.revisedImageMap[filename]) {
-            state.revisedImageMap[filename] = await convertPDFToImage(state.revisedFileMap[filename]);
-        }
-
-        const realOriginal = hasOriginal ? state.originalImageMap[filename] : null;
-        const realRevised = hasRevised ? state.revisedImageMap[filename] : null;
+        const realOriginal = hasOriginal ? await loadDrawingImageWithCache(filename, 'original') : null;
+        const realRevised = hasRevised ? await loadDrawingImageWithCache(filename, 'revised') : null;
 
         if (!realOriginal && !realRevised) {
             throw new Error('Drawing not found in either set.');
@@ -1334,15 +1484,11 @@ async function preloadNearbyDrawings(currentFilename) {
             
             // Preload in background without blocking
             if (!state.originalImageMap[nextFilename]) {
-                convertPDFToImage(state.originalFileMap[nextFilename])
-                    .then(img => state.originalImageMap[nextFilename] = img)
-                    .catch(() => {}); // Silently fail
+                loadDrawingImageWithCache(nextFilename, 'original').catch(() => {}); // Silently fail
             }
-            
+
             if (!state.revisedImageMap[nextFilename]) {
-                convertPDFToImage(state.revisedFileMap[nextFilename])
-                    .then(img => state.revisedImageMap[nextFilename] = img)
-                    .catch(() => {});
+                loadDrawingImageWithCache(nextFilename, 'revised').catch(() => {});
             }
         }
     }
@@ -1765,6 +1911,22 @@ resetViewBtn.addEventListener('click', () => {
     queueOverlayRebuildAndRender();
 });
 
+
+function finalizeAlignmentIfActive() {
+    if (!state.currentDrawing || !state.isAligning) return;
+
+    state.alignmentData[state.currentDrawing] = {
+        originalOffsetX: state.originalAlignOffsetX,
+        originalOffsetY: state.originalAlignOffsetY,
+        revisedOffsetX: state.revisedAlignOffsetX,
+        revisedOffsetY: state.revisedAlignOffsetY
+    };
+    saveAlignmentData();
+    state.isAlignmentPreview = false;
+    queueOverlayRebuildAndRender();
+    exitAlignMode();
+}
+
 function zoomAtCursor(clientX, clientY, factor) {
     if (!state.originalImage) return;
 
@@ -1824,17 +1986,7 @@ canvasContainer.addEventListener('mousedown', (e) => {
         if (state.alignDragging) {
             setupAlignDragOverlay(e);
         } else {
-            teardownAlignDragOverlay();
-            state.alignmentData[state.currentDrawing] = {
-                originalOffsetX: state.originalAlignOffsetX,
-                originalOffsetY: state.originalAlignOffsetY,
-                revisedOffsetX: state.revisedAlignOffsetX,
-                revisedOffsetY: state.revisedAlignOffsetY
-            };
-            saveAlignmentData();
-            state.isAlignmentPreview = false;
-            queueOverlayRebuildAndRender();
-            exitAlignMode();
+            finalizeAlignmentIfActive();
         }
     }
 });
@@ -1846,8 +1998,9 @@ canvasContainer.addEventListener('mousemove', (e) => {
         updateCanvasPosition();
     } else if (state.isAligning && state.alignDragging && state.alignDragElements) {
         // Pure CSS transform — zero canvas rendering, GPU-composited
-        const cssDeltaX = e.clientX - state.alignDragStartX;
-        const cssDeltaY = e.clientY - state.alignDragStartY;
+        const fineTuneFactor = e.shiftKey ? 0.2 : 1;
+        const cssDeltaX = (e.clientX - state.alignDragStartX) * fineTuneFactor;
+        const cssDeltaY = (e.clientY - state.alignDragStartY) * fineTuneFactor;
 
         const movingOverlay = state.aligningVersion === 'original'
             ? state.alignDragElements.origOverlay
@@ -2027,6 +2180,7 @@ backToFoldersBtn.addEventListener('click', () => {
 });
 
 backToListBtn.addEventListener('click', () => {
+    finalizeAlignmentIfActive();
     closeNotePanel();
     comparisonView.style.display = 'none';
     drawingListView.style.display = 'flex';
