@@ -44,6 +44,13 @@
                     <select id="letter-filter">
                         <option value="ALL">All</option>
                     </select>
+                    <label for="status-filter">Status:</label>
+                    <select id="status-filter">
+                        <option value="ALL">All Drawings</option>
+                        <option value="NOTED">Has Notes</option>
+                        <option value="FLAGGED">Flagged</option>
+                        <option value="NOTED_OR_FLAGGED">Notes or Flagged</option>
+                    </select>
                     <button id="see-all-notes" class="btn-small">See All Notes</button>
                     <button id="save-session" class="btn-small">Save Session</button>
                     <button id="back-to-folders" class="btn-secondary">Change Folders</button>
@@ -96,7 +103,7 @@
             </div>
             
             <div id="align-active-message" class="align-active-message" style="display: none;">
-                <p>Click and drag to align the drawing. Click again to release.</p>
+                <p>Click and drag to align the drawing. Hold Shift for finer movement. Click again to release.</p>
             </div>
             
             <div id="canvas-container">
