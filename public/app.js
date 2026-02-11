@@ -929,15 +929,65 @@ function showError(message) {
     errorMessage.style.display = 'block';
 }
 
+function extractSheetNumber(filename) {
+    if (!filename) return '';
+
+    const baseName = filename.replace(/\.pdf$/i, '').trim();
+    const firstToken = baseName.split(/\s+/)[0] || '';
+
+    return firstToken.toUpperCase();
+}
+
 function categorizeFiles() {
+    state.originalFileMap = {};
+    state.revisedFileMap = {};
+
+    state.originalFiles.forEach((file) => {
+        state.originalFileMap[file.name] = file;
+    });
+
+    state.revisedFiles.forEach((file) => {
+        state.revisedFileMap[file.name] = file;
+    });
+
     const originalNames = state.originalFiles.map(f => f.name);
     const revisedNames = state.revisedFiles.map(f => f.name);
-    const originalSet = new Set(originalNames);
     const revisedSet = new Set(revisedNames);
 
-    state.originalOnlyFiles = originalNames.filter(f => !revisedSet.has(f));
-    state.revisedOnlyFiles = revisedNames.filter(f => !originalSet.has(f));
     state.bothFiles = originalNames.filter(f => revisedSet.has(f));
+
+    const unmatchedOriginals = originalNames.filter(f => !revisedSet.has(f));
+    const matchedRevisedByName = new Set(state.bothFiles);
+    const unmatchedRevised = revisedNames.filter(f => !matchedRevisedByName.has(f));
+
+    const revisedBySheet = new Map();
+    unmatchedRevised.forEach((name) => {
+        const sheetNumber = extractSheetNumber(name);
+        if (!sheetNumber) return;
+        if (!revisedBySheet.has(sheetNumber)) {
+            revisedBySheet.set(sheetNumber, []);
+        }
+        revisedBySheet.get(sheetNumber).push(name);
+    });
+
+    const autoMatchedOriginals = new Set();
+    const autoMatchedRevised = new Set();
+
+    unmatchedOriginals.forEach((origName) => {
+        const sheetNumber = extractSheetNumber(origName);
+        const candidates = sheetNumber ? revisedBySheet.get(sheetNumber) : null;
+        const revName = candidates && candidates.length > 0 ? candidates.shift() : null;
+
+        if (!revName) return;
+
+        autoMatchedOriginals.add(origName);
+        autoMatchedRevised.add(revName);
+        state.bothFiles.push(origName);
+        state.revisedFileMap[origName] = state.revisedFileMap[revName];
+    });
+
+    state.originalOnlyFiles = unmatchedOriginals.filter(f => !autoMatchedOriginals.has(f));
+    state.revisedOnlyFiles = unmatchedRevised.filter(f => !autoMatchedRevised.has(f));
 
     // Apply manual matches: move matched pairs from only-lists to both-list
     const matchedOriginals = new Set();
