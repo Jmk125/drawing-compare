@@ -58,7 +58,8 @@ const state = {
     manualMatches: {},
     matchingMode: false,
     matchingSource: null,
-    matchingSourceSide: null
+    matchingSourceSide: null,
+    currentDrawingListId: null
 };
 
 state.compositeCanvas = document.createElement('canvas');
@@ -125,6 +126,8 @@ const exportNotesBtn = document.getElementById('export-notes');
 const originalOnlyListEl = document.getElementById('original-only-list');
 const bothListEl = document.getElementById('both-list');
 const revisedOnlyListEl = document.getElementById('revised-only-list');
+const previousDrawingBtn = document.getElementById('previous-drawing');
+const nextDrawingBtn = document.getElementById('next-drawing');
 
 state.canvas = canvas;
 state.ctx = ctx;
@@ -1138,7 +1141,7 @@ function populateList(listId, files, withCheckbox) {
                 return;
             }
 
-            openComparison(filename);
+            openComparison(filename, listId);
         };
 
         // Show matched-pair name as tooltip for manually matched drawings
@@ -1478,9 +1481,11 @@ async function createBlankImage(width, height) {
     return img;
 }
 
-async function openComparison(filename) {
+async function openComparison(filename, sourceListId = null) {
     captureDrawingListScrollPositions();
     state.currentDrawing = filename;
+    state.currentDrawingListId = sourceListId || state.currentDrawingListId || 'both-list';
+    updateComparisonNavButtons();
     currentDrawingName.textContent = filename + ' - Loading...';
 
     drawingListView.style.display = 'none';
@@ -1550,16 +1555,58 @@ async function openComparison(filename) {
     }
 }
 
+function getCurrentDrawingListFiles() {
+    if (state.currentDrawingListId === 'original-only-list') {
+        return getFilteredFiles(state.originalOnlyFiles);
+    }
+    if (state.currentDrawingListId === 'revised-only-list') {
+        return getFilteredFiles(state.revisedOnlyFiles);
+    }
+    return getFilteredFiles(state.bothFiles);
+}
+
+function updateComparisonNavButtons() {
+    if (!previousDrawingBtn || !nextDrawingBtn) return;
+
+    const files = getCurrentDrawingListFiles();
+    const currentIndex = files.indexOf(state.currentDrawing);
+    const hasCurrent = currentIndex !== -1;
+
+    previousDrawingBtn.disabled = !hasCurrent || currentIndex === 0;
+    nextDrawingBtn.disabled = !hasCurrent || currentIndex === files.length - 1;
+}
+
+function navigateToAdjacentDrawing(direction) {
+    if (!state.currentDrawing) return;
+
+    const files = getCurrentDrawingListFiles();
+    const currentIndex = files.indexOf(state.currentDrawing);
+    if (currentIndex === -1) {
+        updateComparisonNavButtons();
+        return;
+    }
+
+    const nextIndex = currentIndex + direction;
+    if (nextIndex < 0 || nextIndex >= files.length) {
+        updateComparisonNavButtons();
+        return;
+    }
+
+    openComparison(files[nextIndex], state.currentDrawingListId);
+}
+
 // Preload nearby drawings in the background
 async function preloadNearbyDrawings(currentFilename) {
-    const currentIndex = state.bothFiles.indexOf(currentFilename);
+
+    const activeFiles = getCurrentDrawingListFiles();
+    const currentIndex = activeFiles.indexOf(currentFilename);
     if (currentIndex === -1) return;
     
     // Preload next 2 drawings
     for (let i = 1; i <= 2; i++) {
         const nextIndex = currentIndex + i;
-        if (nextIndex < state.bothFiles.length) {
-            const nextFilename = state.bothFiles[nextIndex];
+        if (nextIndex < activeFiles.length) {
+            const nextFilename = activeFiles[nextIndex];
             
             // Preload in background without blocking
             if (!state.originalImageMap[nextFilename]) {
@@ -2275,8 +2322,19 @@ backToListBtn.addEventListener('click', () => {
     closeNotePanel();
     comparisonView.style.display = 'none';
     drawingListView.style.display = 'flex';
+    state.currentDrawing = null;
+    state.currentDrawingListId = null;
     refreshDrawingLists();
     restoreDrawingListScrollPositions();
+    updateComparisonNavButtons();
+});
+
+previousDrawingBtn.addEventListener('click', () => {
+    navigateToAdjacentDrawing(-1);
+});
+
+nextDrawingBtn.addEventListener('click', () => {
+    navigateToAdjacentDrawing(1);
 });
 
 window.addEventListener('resize', () => {
