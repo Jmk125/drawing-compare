@@ -1026,50 +1026,25 @@ function renderComparison() {
 
     const displayScale = fitScale * state.scale;
 
-    if (state.isAlignmentPreview) {
-        // During alignment drag, keep the canvas buffer at native resolution
-        // and use CSS sizing for zoom. This avoids creating a huge pixel
-        // buffer when zoomed in — CSS scaling is GPU-composited and free.
-        const nativeW = state.compositeCanvas.width;
-        const nativeH = state.compositeCanvas.height;
-        if (canvas.width !== nativeW || canvas.height !== nativeH) {
-            canvas.width = nativeW;
-            canvas.height = nativeH;
-        }
-
-        const cssW = nativeW * displayScale;
-        const cssH = nativeH * displayScale;
-        canvas.style.width = cssW + 'px';
-        canvas.style.height = cssH + 'px';
-        canvas.style.left = `${(containerWidth - cssW) / 2 + state.offsetX}px`;
-        canvas.style.top = `${(containerHeight - cssH) / 2 + state.offsetY}px`;
-
-        ctx.clearRect(0, 0, nativeW, nativeH);
-        ctx.drawImage(state.compositeCanvas, 0, 0);
-
-        updateZoomDisplay();
-        return;
+    // Keep canvas buffer at native resolution; CSS handles zoom scaling.
+    // This avoids reallocating huge buffers when zoomed in — drawImage
+    // stays 1:1 and the browser's GPU handles display scaling for free.
+    const nativeW = state.compositeCanvas.width;
+    const nativeH = state.compositeCanvas.height;
+    if (canvas.width !== nativeW || canvas.height !== nativeH) {
+        canvas.width = nativeW;
+        canvas.height = nativeH;
     }
 
-    // Normal rendering: canvas buffer at full display resolution.
-    // Clear CSS size overrides from alignment mode.
-    canvas.style.width = '';
-    canvas.style.height = '';
+    const cssW = nativeW * displayScale;
+    const cssH = nativeH * displayScale;
+    canvas.style.width = cssW + 'px';
+    canvas.style.height = cssH + 'px';
+    canvas.style.left = `${(containerWidth - cssW) / 2 + state.offsetX}px`;
+    canvas.style.top = `${(containerHeight - cssH) / 2 + state.offsetY}px`;
 
-    const newWidth = Math.round(imgWidth * displayScale);
-    const newHeight = Math.round(imgHeight * displayScale);
-    if (canvas.width !== newWidth || canvas.height !== newHeight) {
-        canvas.width = newWidth;
-        canvas.height = newHeight;
-    }
-
-    canvas.style.left = `${(containerWidth - canvas.width) / 2 + state.offsetX}px`;
-    canvas.style.top = `${(containerHeight - canvas.height) / 2 + state.offsetY}px`;
-
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.imageSmoothingEnabled = true;
-    ctx.imageSmoothingQuality = 'high';
-    ctx.drawImage(state.compositeCanvas, 0, 0, canvas.width, canvas.height);
+    ctx.clearRect(0, 0, nativeW, nativeH);
+    ctx.drawImage(state.compositeCanvas, 0, 0);
 
     updateZoomDisplay();
 }
@@ -1233,9 +1208,11 @@ function updateCanvasPosition() {
     const container = canvasContainer;
     const containerWidth = container.clientWidth;
     const containerHeight = container.clientHeight;
-    
-    canvas.style.left = `${(containerWidth - canvas.width) / 2 + state.offsetX}px`;
-    canvas.style.top = `${(containerHeight - canvas.height) / 2 + state.offsetY}px`;
+    const cssW = parseFloat(canvas.style.width) || canvas.width;
+    const cssH = parseFloat(canvas.style.height) || canvas.height;
+
+    canvas.style.left = `${(containerWidth - cssW) / 2 + state.offsetX}px`;
+    canvas.style.top = `${(containerHeight - cssH) / 2 + state.offsetY}px`;
 }
 
 function renderOverlay(
@@ -1485,9 +1462,9 @@ canvasContainer.addEventListener('mousedown', (e) => {
         state.alignDragging = !state.alignDragging;
         
         if (state.alignDragging) {
-            const rect = canvasContainer.getBoundingClientRect();
-            state.alignDragStartX = e.clientX - rect.left - (rect.width - canvas.width) / 2;
-            state.alignDragStartY = e.clientY - rect.top - (rect.height - canvas.height) / 2;
+            const canvasRect = canvas.getBoundingClientRect();
+            state.alignDragStartX = e.clientX - canvasRect.left;
+            state.alignDragStartY = e.clientY - canvasRect.top;
         } else {
             state.alignmentData[state.currentDrawing] = {
                 originalOffsetX: state.originalAlignOffsetX,
@@ -1509,12 +1486,13 @@ canvasContainer.addEventListener('mousemove', (e) => {
         state.offsetY = e.clientY - state.panStartY;
         updateCanvasPosition();
     } else if (state.isAligning && state.alignDragging) {
-        const rect = canvasContainer.getBoundingClientRect();
-        const currentX = e.clientX - rect.left - (rect.width - canvas.width) / 2;
-        const currentY = e.clientY - rect.top - (rect.height - canvas.height) / 2;
-        
-        const deltaX = (currentX - state.alignDragStartX) / state.scale;
-        const deltaY = (currentY - state.alignDragStartY) / state.scale;
+        const canvasRect = canvas.getBoundingClientRect();
+        const currentX = e.clientX - canvasRect.left;
+        const currentY = e.clientY - canvasRect.top;
+
+        const effectiveScale = canvasRect.width / canvas.width;
+        const deltaX = (currentX - state.alignDragStartX) / effectiveScale;
+        const deltaY = (currentY - state.alignDragStartY) / effectiveScale;
         
         if (state.aligningVersion === 'original') {
             state.originalAlignOffsetX += deltaX;
